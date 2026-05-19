@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: readoption-db
+    environment:
+      POSTGRES_DB: readoption
+      POSTGRES_USER: readoption
+      POSTGRES_PASSWORD: readoption
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
