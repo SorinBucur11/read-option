@@ -1,14 +1,18 @@
 package app.readoption.player;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
+import org.springframework.data.domain.Persistable;
+
 import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "player")
-public class Player {
+public class Player implements Persistable<String> {
 
     @Id
     private String id;
@@ -23,16 +27,13 @@ public class Player {
     private String fullName;
 
     private String position;
-
     private String team;
-
     private Integer age;
 
     @Column(name = "years_exp")
     private Integer yearsExp;
 
     private String status;
-
     private Boolean active;
 
     @Column(name = "created_at")
@@ -41,6 +42,10 @@ public class Player {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
+    @Transient
+    @JsonIgnore
+    private boolean isNew = true;
+
     protected Player() {}
 
     public Player(String id, String firstName, String lastName, String fullName) {
@@ -48,10 +53,18 @@ public class Player {
         this.firstName = firstName;
         this.lastName = lastName;
         this.fullName = fullName;
+        this.createdAt = LocalDateTime.now();
     }
 
-    // Getters
+    @Override
     public String getId() { return id; }
+
+    @Override
+    public boolean isNew() { return isNew; }
+
+    public void markExisting() { this.isNew = false; }
+
+    // rest of getters and setters stay the same
     public String getFirstName() { return firstName; }
     public String getLastName() { return lastName; }
     public String getFullName() { return fullName; }
@@ -64,7 +77,6 @@ public class Player {
     public LocalDateTime getCreatedAt() { return createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
 
-    // Setters for mutable fields
     public void setPosition(String position) { this.position = position; }
     public void setTeam(String team) { this.team = team; }
     public void setAge(Integer age) { this.age = age; }
