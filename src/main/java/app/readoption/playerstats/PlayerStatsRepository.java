@@ -9,4 +9,6 @@ public interface PlayerStatsRepository extends JpaRepository<PlayerStats, Player
     List<PlayerStats> findByPlayerId(String playerId);
 
     List<PlayerStats> findByYear(int year);
+
+    List<PlayerStats> findByPlayerIdAndYear(String playerId, int year);
 }

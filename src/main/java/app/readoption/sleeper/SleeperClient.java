@@ -14,6 +14,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 @Component
@@ -24,14 +25,17 @@ public class SleeperClient {
     private final HttpClient httpClient;
     private final ObjectMapper mapper;
     private final String playersUrl;
+    private final String statsBaseUrl;
 
-    public SleeperClient(@Value("${sleeper.api.players-url}") String playersUrl) {
+    public SleeperClient(@Value("${sleeper.api.players-url}") String playersUrl,
+                         @Value("${sleeper.api.stats-url}") String statsBaseUrl) {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
         this.mapper = new ObjectMapper()
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
         this.playersUrl = playersUrl;
+        this.statsBaseUrl = statsBaseUrl;
     }
 
     public Map<String, SleeperPlayer> fetchAllPlayers() {
@@ -62,6 +66,38 @@ public class SleeperClient {
         } catch (IOException | InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Failed to fetch players from Sleeper API", e);
+        }
+    }
+
+    public List<SleeperPlayerStats> fetchStats(int season) {
+        String url = statsBaseUrl + "/" + season + "?season_type=regular";
+        log.info("Fetching stats from Sleeper for season {}: {}", season, url);
+
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .GET()
+                    .timeout(Duration.ofSeconds(30))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request,
+                    HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() != 200) {
+                throw new RuntimeException("Sleeper stats API returned " + response.statusCode());
+            }
+
+            List<SleeperPlayerStats> stats = mapper.readValue(
+                    response.body(),
+                    new TypeReference<List<SleeperPlayerStats>>() {}
+            );
+
+            log.info("Fetched {} player stat lines for season {}", stats.size(), season);
+            return stats;
+
+        } catch (IOException | InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Failed to fetch stats from Sleeper API", e);
         }
     }
 }

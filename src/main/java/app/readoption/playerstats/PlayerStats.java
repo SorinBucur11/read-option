@@ -22,6 +22,7 @@ public class PlayerStats implements Persistable<PlayerStatsId> {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "player_id", insertable = false, updatable = false)
+    @JsonIgnore
     private Player player;
 
     private String team;
