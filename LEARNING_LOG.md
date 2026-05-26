@@ -317,6 +317,25 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | **Hibernate proxy** | ByteBuddy-generated placeholder for lazy-loaded entities. Triggers real DB query on first access. Causes serialization errors if Jackson hits it. |
 | **Persistable** | Spring Data interface. Override `isNew()` to tell JPA whether to INSERT or UPDATE — eliminates SELECT-per-entity with manual IDs. |
 | **insertable/updatable = false** | `@JoinColumn` setting. Marks a mapping as read-only when two fields map to the same column. Prevents write conflicts. |
+| **Extracted interface** | Refactoring pattern: define an interface from an existing class's public API. The class already satisfies the contract, you just declare it. Used for `StatLine` extracted from `PlayerStats` getters. |
+| **Strategy pattern (via enum)** | Each enum value encapsulates a different strategy (scoring rules). The service takes the enum and uses its values — no switch needed. Adding a strategy = adding an enum value. |
+| **`BigDecimal` String constructor** | `new BigDecimal("0.04")` parses exact decimal. `new BigDecimal(0.04)` uses the double value which can't represent 0.04 exactly. Always use String constructor for precise decimals. |
+| **Physical naming strategy** | Hibernate layer that converts Java field names to database column names. Spring Boot configures `CamelCaseToUnderscoresNamingStrategy`: `fumblesLost` → `fumbles_lost`. |
+| **`@DisplayName`** | JUnit 5 annotation. Provides human-readable test names in output instead of method names. Documents what each test verifies. |
+
+### Fantasy Football Domain
+
+| Term | Definition |
+|------|------------|
+| **Fantasy points** | Calculated score from real NFL stats using a scoring format's rules. The currency of fantasy football. |
+| **Scoring format** | Rules for converting stats to fantasy points. Varies by reception value (Standard/Half-PPR/PPR) and passing TD value (4pt/6pt). |
+| **PPR (Point Per Reception)** | Scoring format awarding 1 point per catch. Boosts pass-catchers (slot WRs, receiving RBs). |
+| **Standard scoring** | Zero points per reception. Favors volume runners and deep-threat WRs over high-volume pass-catchers. |
+| **PPG (Points Per Game)** | Fantasy points divided by games played. Fair comparison metric across players with different games played. |
+| **Positional scarcity / VORP** | Value Over Replacement Player. How much better a player is than the last starter at their position across all league teams. Drives draft strategy — scarce positions are more valuable. |
+| **ADP (Average Draft Position)** | Where a player is typically drafted across many leagues. Gap between actual value and ADP = draft value. |
+| **Roster configuration** | Number of starters per position (1QB/2RB/2WR/1TE/1FLEX). Determines which positions are scarce and therefore valuable. |
+| **Flex slot** | Roster spot that accepts multiple positions (typically RB or WR). Increases demand for those positions. |
 
 ---
 
@@ -337,6 +356,14 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | Chain of thought | Phase 4 (explainable draft recommendations) |
 | Guardrails | Phase 3+ (system prompt constraints) |
 | Streaming | Phase 4+ (responsive UI) |
+| Fantasy scoring | ✅ Done (Week 3 Day 4) |
+| Position enum | ✅ Done (Week 3 Day 4) |
+| Interface extraction | ✅ Done (Week 3 Day 4) — StatLine for scoring abstraction |
+| Unit testing (JUnit 5) | ✅ Done (Week 3 Day 4) — ScoringServiceTest |
+| External projections | Phase 1 Week 4 (Sleeper projections API) |
+| Player scoring table | Phase 1 Week 4 (Flyway V4, entity, repository) |
+| Entity/DTO separation | Phase 1–2 (new entities get DTOs from start; existing refactored when touched) |
+| League settings persistence | Phase 3 (user customization) |
 
 ---
 
@@ -380,7 +407,7 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 - [x] Detour 2 — Spring MVC request lifecycle (DispatcherServlet, HandlerMapping, HttpMessageConverter)
 - [x] Detour 3 — JPA Relationships deep dive (owning side, lazy/eager, N+1, composite keys, @IdClass)
 
-**Hours invested so far:** 32h
+**Hours invested so far:** 36h
 
 ---
 
@@ -621,6 +648,198 @@ read-option/
             ├── V1__create_player_table.sql
             └── V2__create_player_stats_table.sql
 ```
+
+---
+
+### Week 3 Day 4 — Fantasy Scoring Engine: Architecture Decisions + Implementation
+**Time:** ~4h
+
+**What I did**
+- Analyzed 5 interconnected architectural decisions for the fantasy scoring system (formula location, result storage, format handling, computation timing, PPG storage)
+- Defined the role split: external sources predict performance, Claude optimizes draft strategy
+- Built: `Position` enum, `StatLine` interface, `ScoringFormat` enum, `ScoringResult` record, `LeagueSettings` record, `ScoringService`
+- Wrote first unit test in the project: `ScoringServiceTest` (8 tests, no Spring/DB required)
+- Added `V3__add_fumbles_lost_to_player_stats.sql` Flyway migration
+- Updated `PlayerStats` to implement `StatLine`, added `fumblesLost` field
+- Updated `SleeperStatsData` to map `fum_lost` from Sleeper API
+- Re-synced all 5 seasons to populate `fumbles_lost`
+
+**Architectural decisions and reasoning**
+
+1. **Where the scoring formula lives: Java service (not SQL)**
+   - Scoring is business logic with rules, edge cases, and format variations — Java's job
+   - Testable with plain JUnit, no database needed
+   - Banking parallel: transaction fee calculation wouldn't live in a SQL view
+   - **Interview line:** *"The scoring formula is business logic — it has rules, format variations, and edge cases. It belongs in a Java service where it's unit-testable without a database, not in a SQL view where it's buried in migration files and harder to test."*
+
+2. **Where results are stored: separate `player_scoring` table (not columns on `player_stats`)**
+   - Originally considered adding columns to `player_stats`, but projections changed the picture
+   - Both historical stats and projected stats (coming next) need fantasy points calculated
+   - Separate table avoids duplicating computed columns across two source tables
+   - Adding scoring formats = new rows, not schema changes
+   - **Interview line:** *"I chose a separate scoring table because both historical stats and projected stats need fantasy points calculated. A separate table with a source discriminator avoids duplicating computed columns across two source tables and lets me add scoring formats as new rows rather than schema changes."*
+
+3. **Multiple scoring formats: enum with fields (Strategy pattern)**
+   - Only two rules vary between formats: points per reception (0/0.5/1.0) and passing TD value (4/6)
+   - Each enum value carries its own multipliers — no switch statement in the service
+   - Adding a format = one line in the enum, zero changes to the scoring service
+   - MVP uses `STANDARD_6PT`, other formats defined but unused
+   - **Interview line:** *"I put the varying scoring rules directly on the enum values rather than using a switch in the service. Each format carries its own multipliers — adding a new format is one line in the enum, zero changes to the scoring service. It's the Strategy pattern expressed through an enum."*
+
+4. **When to compute: during sync + separate recompute endpoint**
+   - Sync computes as it saves (data always complete)
+   - Recompute endpoint exists for formula iterations during development
+   - Both paths call the same `ScoringService.calculate()` — no duplication
+   - In production, only the sync path matters
+
+5. **PPG: stored, not computed at query time**
+   - Pre-computed means queries, API responses, and Claude prompts all use the same number
+   - Division-by-zero edge case (games_played = 0) handled once in the service
+   - 6 columns total (3 formats × total + PPG) — trivial storage cost
+
+**Projections approach — the key architectural decision**
+- **External source (Sleeper projections API), not building own prediction engine**
+- Player performance prediction is a solved problem at scale (ESPN, FantasyPros have dedicated teams)
+- Claude's value is strategic reasoning: given projected values + user's draft strategy, optimize picks
+- App architecture: **data in (Sleeper projections) → scoring engine (Java) → strategy engine (Claude) → advice out**
+- Example: Mike Evans changing teams, aging — projection models already factor this in. Claude takes those projections and reasons about draft position value and roster construction.
+- **Interview line:** *"I chose to consume projections from established providers rather than build a prediction engine. Player performance prediction is a solved problem at scale. The LLM's value is in strategic reasoning: given projected player values and a user's draft strategy, optimize their picks. That's a clean separation — data providers predict, the scoring engine converts to fantasy points, and Claude optimizes the draft."*
+
+**Entity/DTO separation strategy**
+- Currently returning JPA entities from controllers (with `@JsonIgnore` band-aids)
+- Decision: DTOs from the start on new entities, refactor existing when we touch them
+- No separate refactoring sprint — codebase migrates organically as features evolve
+- Trigger: when API response shape diverges from any single entity (composite responses, filtered fields, computed values)
+- **Interview line:** *"I separate API response DTOs from JPA entities because they serve different masters — entities model database structure, DTOs model what the consumer needs. I introduce DTOs when building new features rather than doing a bulk refactoring pass. The trigger is when the API response shape diverges from any single entity."*
+
+**What I built**
+
+**`Position` enum** — type-safe fantasy positions
+- Enum with `QB, RB, WR, TE, K, DEF` for application logic (league settings, scoring, draft strategy)
+- `Player` entity keeps `position` as String for flexible external API ingestion
+- `FANTASY_POSITION_NAMES` constant (`Set<String>`) for sync filtering — replaces hardcoded set in `PlayerSyncService`
+- **Interview line:** *"I keep the Player entity's position as a String for flexible ingestion from external APIs — Sleeper returns positions like FB and DL that don't map to fantasy categories. Application logic uses a Position enum for type safety. The entity ingests broadly, the enum constrains narrowly."*
+
+**`StatLine` interface** — abstraction over scorable stats
+- Defines getter methods for all scoring-relevant stats
+- `PlayerStats` implements it (historical data). Future `PlayerProjection` will implement it too.
+- Scoring service depends on the interface, not on any concrete entity
+- Method names match existing `PlayerStats` getter names (extracted interface pattern)
+- Uses `Integer` (not `int`) because stats are position-dependent — null means "not applicable"
+- **Interview line:** *"I used an interface because both historical stats and projected stats share the same statistical structure. The scoring service operates on the abstraction, so adding projections later requires zero changes to the scoring logic — just a new class that implements StatLine."*
+
+**`ScoringFormat` enum** — Strategy pattern via enum
+- Each value holds its own `pointsPerReception` and `passingTdPoints`
+- All other rules (rushing yards, receiving TDs, etc.) are constants in the service
+- Six formats defined (all combinations of Standard/Half-PPR/PPR × 4pt/6pt passing TD)
+- MVP uses `STANDARD_6PT`
+
+**`ScoringResult` record** — immutable calculation result
+- Bundles `totalPoints` and `pointsPerGame` as `BigDecimal`
+- Returned by `ScoringService.calculate()` — prevents caller from computing total and PPG independently with different parameters
+
+**`LeagueSettings` record** — roster configuration for draft strategy
+- Captures: teams, position slots (QB/RB/WR/TE), flex slots with eligible positions, bench, scoring format
+- `defaultSettings()` factory method: 12-team, 1QB/2RB/2WR/1TE/1FLEX(RB,WR)/6bench, Standard 6pt
+- Not persisted yet — becomes a database entity in Phase 3 (user customization)
+- Will be injected into Claude's prompt for draft optimization
+- **Interview line:** *"Roster configuration affects draft strategy, not scoring. A player's fantasy points are the same regardless of league format — what changes is their positional value relative to scarcity. I modeled league settings as a record with a factory method now, deferring persistence until the user customization phase."*
+
+**`ScoringService`** — the scoring formula
+- One `calculate(StatLine, ScoringFormat)` method returning `ScoringResult`
+- `BigDecimal` arithmetic with explicit `HALF_UP` rounding at scale 2
+- Constants as `static final BigDecimal` using String constructor (`new BigDecimal("0.04")` not `new BigDecimal(0.04)`)
+- Single `points()` helper method handles null-safe multiplication for all scoring rules
+- PPG edge case: `gamesPlayed <= 0` returns zero PPG (no `ArithmeticException`)
+- `@Service` annotation: currently no dependencies (could be static), but Spring bean enables future DI
+- **Interview line:** *"`new BigDecimal(\"0.04\")` uses the String constructor for exact representation. The double constructor `new BigDecimal(0.04)` can produce `0.04000000000000000083...` because 0.04 isn't exactly representable in IEEE 754. The String constructor parses the literal decimal value."*
+
+**`ScoringServiceTest`** — first unit test in the project
+- 8 tests covering: QB scoring, RB scoring, PPR vs Standard comparison, 4pt vs 6pt passing TD, all nulls, zero games played, half-PPR verification, 2pt conversions + fumbles
+- Uses anonymous `StatLine` implementation — no JPA, no Spring, no database
+- `@DisplayName` for readable test output
+- Each test verifies one scoring rule or edge case with hand-calculated expected values
+- **Interview line:** *"The scoring service is tested with an anonymous implementation of the StatLine interface — no JPA entity, no database, no Spring context. This is the benefit of depending on an interface rather than a concrete entity class. Same code path, different implementations."*
+
+**Mistakes and things I learned**
+
+1. **`int` vs `Integer` for interface implementation**
+   - `PlayerStats` had `int gamesPlayed` but `StatLine` declared `Integer getGamesPlayed()`
+   - Java does NOT autobox return types for method overriding — `int` does not satisfy `Integer`
+   - Fix: changed `gamesPlayed` from `int` to `Integer` in the entity
+   - **Interview line:** *"Primitive return types don't satisfy wrapper return types in interface implementation — Java's autoboxing works for assignments and parameters but not for method override signatures."*
+
+2. **StatLine field names didn't match entity**
+   - Initially wrote `getPassYards()` in interface, but entity has `getPassingYards()`
+   - Interface should adapt to the existing entity (extracted interface pattern), not the other way around
+   - Lesson: check actual code before designing the interface
+
+3. **Missing `fumblesLost` in entity, missing `twoPtConv` in interface**
+   - Entity had `twoPtConv` (2-point conversions worth 2 fantasy points) that I missed
+   - Entity was missing `fumblesLost` (-2 points per fumble) — added via V3 Flyway migration
+   - Re-synced all seasons after adding the column and updating the DTO
+
+**Hibernate naming strategy — `CamelCaseToUnderscoresNamingStrategy`**
+- Spring Boot auto-configures Hibernate to convert camelCase field names to snake_case column names
+- `fumblesLost` → `fumbles_lost`, `passingYards` → `passing_yards`, `createdAt` → `created_at`
+- No `@Column` annotation needed when the mapping follows this convention
+- Without Spring Boot (plain Hibernate), field names map as-is — Boot overrides this default
+- `@Column(name = "...")` only needed when the mapping doesn't follow convention or for constraints
+- **Interview line:** *"Spring Boot configures Hibernate's physical naming strategy to convert camelCase field names to snake_case column names automatically. You only need `@Column` when the mapping doesn't follow the convention or when you need to set constraints."*
+
+### Project structure (updated)
+```
+read-option/
+├── docker-compose.yml
+├── pom.xml
+└── src/
+    ├── main/java/app/readoption/
+    │   ├── ReadOptionApplication.java
+    │   ├── player/
+    │   │   ├── Player.java                     ← JPA entity (Persistable)
+    │   │   ├── PlayerRepository.java
+    │   │   ├── PlayerSyncService.java          ← uses Position.FANTASY_POSITION_NAMES
+    │   │   └── PlayerController.java
+    │   ├── playerstats/
+    │   │   ├── PlayerStats.java                ← implements Persistable + StatLine
+    │   │   ├── PlayerStatsId.java
+    │   │   ├── PlayerStatsRepository.java
+    │   │   ├── PlayerStatsSyncService.java
+    │   │   └── PlayerStatsController.java
+    │   ├── scoring/                            ← NEW PACKAGE
+    │   │   ├── Position.java                   ← enum (QB, RB, WR, TE, K, DEF)
+    │   │   ├── StatLine.java                   ← interface for scorable stats
+    │   │   ├── ScoringFormat.java              ← enum with Strategy pattern
+    │   │   ├── ScoringResult.java              ← immutable result record
+    │   │   ├── ScoringService.java             ← formula logic (@Service)
+    │   │   └── LeagueSettings.java             ← roster config record
+    │   └── sleeper/
+    │       ├── SleeperClient.java
+    │       ├── SleeperPlayer.java
+    │       ├── SleeperPlayerStats.java
+    │       └── SleeperStatsData.java           ← updated: added fumblesLost
+    ├── resources/
+    │   ├── application.properties
+    │   └── db/migration/
+    │       ├── V1__create_player_table.sql
+    │       ├── V2__create_player_stats_table.sql
+    │       └── V3__add_fumbles_lost_to_player_stats.sql  ← NEW
+    └── test/java/app/readoption/
+        └── scoring/
+            └── ScoringServiceTest.java         ← 8 unit tests, no Spring context
+```
+
+### Week 3 Status
+- [x] Day 1 — Project setup, Docker Compose, Flyway V1, Player entity + repository
+- [x] Day 2 — Sleeper API integration, PlayerSyncService, ETL pipeline (3,217 players)
+- [x] Day 3 — Player stats: schema, entities, JPA relationships, stats sync (5 seasons, ~15k stat lines)
+- [x] Day 4 — Fantasy scoring engine: 5 architectural decisions, ScoringService, StatLine interface, Position enum, first unit tests, V3 migration (fumbles_lost)
+
+### Week 4 Plan
+- [ ] Day 1 — `player_scoring` table (Flyway V4), entity, repository, wire into stats sync + recompute endpoint
+- [ ] Day 2 — `player_projections` table (Flyway V5), Sleeper projections fetch, sync pipeline
+- [ ] Day 3 — Score projections through ScoringService, store results
+- [ ] Day 4 — Query endpoints: top N by projected points, player detail with historical trend + projection
 
 ---
 
@@ -1316,3 +1535,22 @@ spring-ai-playground/
 - `@JsonIgnoreProperties(ignoreUnknown = true)` at class level for external API DTOs
 - `TypeReference` (Jackson) for generic deserialization — same pattern as `ParameterizedTypeReference`
 - Double → Integer type conversion in ETL — DTO types match source, entity types match database
+- Hibernate physical naming strategy: `CamelCaseToUnderscoresNamingStrategy` (Spring Boot default)
+- When `@Column` is needed vs when naming convention handles it
+- Adding columns via Flyway migration + re-sync pattern for evolving ETL schemas
+
+**Scoring / Business Logic Architecture**
+- Five interconnected architectural decisions for fantasy scoring (formula location, result storage, format handling, computation timing, PPG)
+- Why scoring formula lives in Java service, not SQL (business logic, testable, format-aware)
+- Strategy pattern via enum: scoring format rules carried by enum values, no switch statements
+- Why external projections over building own prediction engine — division of labor with the LLM
+- Claude's role: strategic reasoning over structured data, not statistical prediction
+- `BigDecimal` String constructor vs double constructor — exact decimal representation
+- Entity/DTO separation strategy: new entities get DTOs from start, existing refactored when touched
+
+**Interface Design / Testing**
+- Extracted interface pattern: designing `StatLine` from existing `PlayerStats` getters
+- Why interface over concrete class: `ScoringService` works on historical stats AND future projections without changes
+- Anonymous interface implementations for zero-infrastructure unit testing
+- `@DisplayName` for self-documenting test suites
+- Primitive vs wrapper return types in interface implementation: `int` does not satisfy `Integer`
