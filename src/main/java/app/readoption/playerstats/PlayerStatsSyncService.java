@@ -89,6 +89,7 @@ public class PlayerStatsSyncService {
         entity.setReceptions(toNullableInt(stats.receptions()));
         entity.setReceivingYards(toNullableInt(stats.receivingYards()));
         entity.setReceivingTd(toNullableInt(stats.receivingTd()));
+        entity.setFumblesLost(toNullableInt(stats.fumblesLost()));
         entity.setTwoPtConv(sumTwoPt(stats));
 
         LocalDateTime now = LocalDateTime.now();

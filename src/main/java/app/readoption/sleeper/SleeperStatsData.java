@@ -18,6 +18,7 @@ public record SleeperStatsData(
         @JsonProperty("rec") Double receptions,
         @JsonProperty("rec_yd") Double receivingYards,
         @JsonProperty("rec_td") Double receivingTd,
+        @JsonProperty("fum_lost") Double fumblesLost,
         @JsonProperty("pass_2pt") Double pass2pt,
         @JsonProperty("rush_2pt") Double rush2pt,
         @JsonProperty("rec_2pt") Double rec2pt

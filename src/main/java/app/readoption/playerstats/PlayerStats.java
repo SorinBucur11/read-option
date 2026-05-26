@@ -1,6 +1,7 @@
 package app.readoption.playerstats;
 
 import app.readoption.player.Player;
+import app.readoption.scoring.StatLine;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import org.springframework.data.domain.Persistable;
@@ -11,7 +12,7 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "player_stats")
 @IdClass(PlayerStatsId.class)
-public class PlayerStats implements Persistable<PlayerStatsId> {
+public class PlayerStats implements Persistable<PlayerStatsId>, StatLine {
 
     @Id
     @Column(name = "player_id")
@@ -27,7 +28,7 @@ public class PlayerStats implements Persistable<PlayerStatsId> {
 
     private String team;
     private int games;
-    private int gamesPlayed;
+    private Integer gamesPlayed;
     private Integer passAttempts;
     private Integer passesCompleted;
     private Integer passingYards;
@@ -40,6 +41,7 @@ public class PlayerStats implements Persistable<PlayerStatsId> {
     private Integer receptions;
     private Integer receivingYards;
     private Integer receivingTd;
+    private Integer fumblesLost;
     private Integer twoPtConv;
 
     @Column(name = "created_at", updatable = false)
@@ -114,11 +116,11 @@ public class PlayerStats implements Persistable<PlayerStatsId> {
         this.games = games;
     }
 
-    public int getGamesPlayed() {
+    public Integer getGamesPlayed() {
         return gamesPlayed;
     }
 
-    public void setGamesPlayed(int gamesPlayed) {
+    public void setGamesPlayed(Integer gamesPlayed) {
         this.gamesPlayed = gamesPlayed;
     }
 
@@ -216,6 +218,14 @@ public class PlayerStats implements Persistable<PlayerStatsId> {
 
     public void setReceivingTd(Integer receivingTd) {
         this.receivingTd = receivingTd;
+    }
+
+    public Integer getFumblesLost() {
+        return fumblesLost;
+    }
+
+    public void setFumblesLost(Integer fumblesLost) {
+        this.fumblesLost = fumblesLost;
     }
 
     public Integer getTwoPtConv() {

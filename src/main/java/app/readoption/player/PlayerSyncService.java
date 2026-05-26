@@ -1,5 +1,6 @@
 package app.readoption.player;
 
+import app.readoption.scoring.Position;
 import app.readoption.sleeper.SleeperClient;
 import app.readoption.sleeper.SleeperPlayer;
 import org.slf4j.Logger;
@@ -17,7 +18,6 @@ import java.util.stream.Collectors;
 public class PlayerSyncService {
 
     private static final Logger log = LoggerFactory.getLogger(PlayerSyncService.class);
-    private static final Set<String> FANTASY_POSITIONS = Set.of("QB", "RB", "WR", "TE", "K", "DEF");
 
     private final SleeperClient sleeperClient;
     private final PlayerRepository playerRepository;
@@ -41,7 +41,7 @@ public class PlayerSyncService {
         List<Player> fantasyPlayers = allPlayers.values().stream()
                 .filter(sp -> Boolean.TRUE.equals(sp.active()))
                 .filter(sp -> sp.position() != null)
-                .filter(sp -> FANTASY_POSITIONS.contains(sp.position()))
+                .filter(sp -> Position.FANTASY_POSITION_NAMES.contains(sp.position()))
                 .filter(sp -> sp.playerId() != null)
                 .map(this::toEntity)
                 .toList();
