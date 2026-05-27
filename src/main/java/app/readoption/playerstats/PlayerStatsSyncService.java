@@ -2,6 +2,7 @@ package app.readoption.playerstats;
 
 import app.readoption.player.Player;
 import app.readoption.player.PlayerRepository;
+import app.readoption.playerscoring.PlayerScoringService;
 import app.readoption.sleeper.SleeperClient;
 import app.readoption.sleeper.SleeperPlayerStats;
 import app.readoption.sleeper.SleeperStatsData;
@@ -23,18 +24,21 @@ public class PlayerStatsSyncService {
     private final SleeperClient sleeperClient;
     private final PlayerStatsRepository playerStatsRepository;
     private final PlayerRepository playerRepository;
+    private final PlayerScoringService playerScoringService;
 
     public PlayerStatsSyncService(SleeperClient sleeperClient,
                                   PlayerStatsRepository playerStatsRepository,
-                                  PlayerRepository playerRepository) {
+                                  PlayerRepository playerRepository,
+                                  PlayerScoringService playerScoringService) {
         this.sleeperClient = sleeperClient;
         this.playerStatsRepository = playerStatsRepository;
         this.playerRepository = playerRepository;
+        this.playerScoringService = playerScoringService;
     }
 
     @Transactional
     public int syncStats(int season) {
-        log.info("Starting stats sync for seaseon {}", season);
+        log.info("Starting stats sync for season {}", season);
 
         List<SleeperPlayerStats> allStats = sleeperClient.fetchStats(season);
 
@@ -65,6 +69,8 @@ public class PlayerStatsSyncService {
 
         playerStatsRepository.saveAll(entities);
         log.info("Saved {} stat lines for season {}", entities.size(), season);
+        // Compute and save fantasy points for all scoring formats
+        playerScoringService.computeAndSaveForSeason(season);
 
         return entities.size();
     }
