@@ -8,7 +8,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -71,14 +70,17 @@ public class PlayerSyncService {
             }
         }
 
-        Player player = new Player(sp.playerId(), firstName, lastName, fullName);
-        player.setPosition(sp.position());
-        player.setTeam(sp.team());
-        player.setAge(sp.age());
-        player.setYearsExp(sp.yearsExp());
-        player.setStatus(sp.status());
-        player.setActive(sp.active());
-        player.setUpdatedAt(LocalDateTime.now());
-        return player;
+        return Player.builder()
+                .id(sp.playerId())
+                .firstName(firstName)
+                .lastName(lastName)
+                .fullName(fullName)
+                .position(sp.position())
+                .team(sp.team())
+                .age(sp.age())
+                .yearsExp(sp.yearsExp())
+                .status(sp.status())
+                .active(sp.active())
+                .build();
     }
 }

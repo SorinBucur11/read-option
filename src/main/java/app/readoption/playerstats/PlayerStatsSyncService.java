@@ -77,30 +77,29 @@ public class PlayerStatsSyncService {
 
     private PlayerStats mapToEntity(SleeperPlayerStats source, int season,
                                     int totalGames, Set<PlayerStatsId> existingIds) {
-        PlayerStats entity = new PlayerStats(source.playerId(), season);
+
         SleeperStatsData stats = source.stats();
-
-        entity.setTeam(source.team());
-        entity.setGames(totalGames);
-        entity.setGamesPlayed(toInt(stats.gamesPlayed()));
-        entity.setPassAttempts(toNullableInt(stats.passAttempts()));
-        entity.setPassesCompleted(toNullableInt(stats.passesCompleted()));
-        entity.setPassingYards(toNullableInt(stats.passingYards()));
-        entity.setPassingTd(toNullableInt(stats.passingTd()));
-        entity.setInterceptions(toNullableInt(stats.interceptions()));
-        entity.setRushingAttempts(toNullableInt(stats.rushingAttempts()));
-        entity.setRushingYards(toNullableInt(stats.rushingYards()));
-        entity.setRushingTd(toNullableInt(stats.rushingTd()));
-        entity.setTargets(toNullableInt(stats.targets()));
-        entity.setReceptions(toNullableInt(stats.receptions()));
-        entity.setReceivingYards(toNullableInt(stats.receivingYards()));
-        entity.setReceivingTd(toNullableInt(stats.receivingTd()));
-        entity.setFumblesLost(toNullableInt(stats.fumblesLost()));
-        entity.setTwoPtConv(sumTwoPt(stats));
-
-        LocalDateTime now = LocalDateTime.now();
-        entity.setCreatedAt(now);
-        entity.setUpdatedAt(now);
+        PlayerStats entity = PlayerStats.builder()
+                .playerId(source.playerId())
+                .year(season)
+                .team(source.team())
+                .games(totalGames)
+                .gamesPlayed(toInt(stats.gamesPlayed()))
+                .passAttempts(toNullableInt(stats.passAttempts()))
+                .passesCompleted(toNullableInt(stats.passesCompleted()))
+                .passingYards(toNullableInt(stats.passingYards()))
+                .passingTd(toNullableInt(stats.passingTd()))
+                .interceptions(toNullableInt(stats.interceptions()))
+                .rushingAttempts(toNullableInt(stats.rushingAttempts()))
+                .rushingYards(toNullableInt(stats.rushingYards()))
+                .rushingTd(toNullableInt(stats.rushingTd()))
+                .targets(toNullableInt(stats.targets()))
+                .receptions(toNullableInt(stats.receptions()))
+                .receivingYards(toNullableInt(stats.receivingYards()))
+                .receivingTd(toNullableInt(stats.receivingTd()))
+                .fumblesLost(toNullableInt(stats.fumblesLost()))
+                .twoPtConv(sumTwoPt(stats))
+                .build();
 
         // Upsert logic: if this player+year already exists, mark as existing
         // so Persistable.isNew() returns false and JPA does UPDATE not INSERT

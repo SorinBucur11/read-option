@@ -1,17 +1,19 @@
 package app.readoption.player;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
-import jakarta.persistence.Transient;
+import jakarta.persistence.*;
+import lombok.*;
 import org.springframework.data.domain.Persistable;
 
 import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "player")
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class Player implements Persistable<String> {
 
     @Id
@@ -44,44 +46,31 @@ public class Player implements Persistable<String> {
 
     @Transient
     @JsonIgnore
+    @Builder.Default
     private boolean isNew = true;
 
-    protected Player() {}
-
-    public Player(String id, String firstName, String lastName, String fullName) {
-        this.id = id;
-        this.firstName = firstName;
-        this.lastName = lastName;
-        this.fullName = fullName;
-        this.createdAt = LocalDateTime.now();
+    @Override
+    public String getId() {
+        return id;
     }
 
     @Override
-    public String getId() { return id; }
+    public boolean isNew() {
+        return isNew;
+    }
 
-    @Override
-    public boolean isNew() { return isNew; }
+    public void markExisting() {
+        this.isNew = false;
+    }
 
-    public void markExisting() { this.isNew = false; }
+    @PrePersist
+    protected void onCreate() {
+        this.createdAt = LocalDateTime.now();
+        this.updatedAt = LocalDateTime.now();
+    }
 
-    // rest of getters and setters stay the same
-    public String getFirstName() { return firstName; }
-    public String getLastName() { return lastName; }
-    public String getFullName() { return fullName; }
-    public String getPosition() { return position; }
-    public String getTeam() { return team; }
-    public Integer getAge() { return age; }
-    public Integer getYearsExp() { return yearsExp; }
-    public String getStatus() { return status; }
-    public Boolean getActive() { return active; }
-    public LocalDateTime getCreatedAt() { return createdAt; }
-    public LocalDateTime getUpdatedAt() { return updatedAt; }
-
-    public void setPosition(String position) { this.position = position; }
-    public void setTeam(String team) { this.team = team; }
-    public void setAge(Integer age) { this.age = age; }
-    public void setYearsExp(Integer yearsExp) { this.yearsExp = yearsExp; }
-    public void setStatus(String status) { this.status = status; }
-    public void setActive(Boolean active) { this.active = active; }
-    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+    @PreUpdate
+    protected void onUpdate() {
+        this.updatedAt = LocalDateTime.now();
+    }
 }

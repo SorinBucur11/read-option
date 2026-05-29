@@ -2,8 +2,8 @@ package app.readoption.playerscoring;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
+import lombok.*;
 import org.springframework.data.domain.Persistable;
-import org.springframework.lang.Nullable;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -11,6 +11,11 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "player_scoring")
 @IdClass(PlayerScoringId.class)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class PlayerScoring implements Persistable<PlayerScoringId> {
 
     @Id
@@ -41,9 +46,8 @@ public class PlayerScoring implements Persistable<PlayerScoringId> {
 
     @Transient
     @JsonIgnore
+    @Builder.Default
     private boolean isNew = true;
-
-    public PlayerScoring() {}
 
     @Override
     @JsonIgnore
@@ -71,61 +75,4 @@ public class PlayerScoring implements Persistable<PlayerScoringId> {
     protected void onUpdate() {
         this.updatedAt = LocalDateTime.now();
     }
-
-    public String getPlayerId() {
-        return playerId;
-    }
-
-    public void setPlayerId(String playerId) {
-        this.playerId = playerId;
-    }
-
-    public int getYear() {
-        return year;
-    }
-
-    public void setYear(int year) {
-        this.year = year;
-    }
-
-    public String getScoringFormat() {
-        return scoringFormat;
-    }
-
-    public void setScoringFormat(String scoringFormat) {
-        this.scoringFormat = scoringFormat;
-    }
-
-    public BigDecimal getTotalPoints() {
-        return totalPoints;
-    }
-
-    public void setTotalPoints(BigDecimal totalPoints) {
-        this.totalPoints = totalPoints;
-    }
-
-    public BigDecimal getPointsPerGame() {
-        return pointsPerGame;
-    }
-
-    public void setPointsPerGame(BigDecimal pointsPerGame) {
-        this.pointsPerGame = pointsPerGame;
-    }
-
-    public int getGamesPlayed() {
-        return gamesPlayed;
-    }
-
-    public void setGamesPlayed(int gamesPlayed) {
-        this.gamesPlayed = gamesPlayed;
-    }
-
-    public LocalDateTime getCreatedAt() {
-        return createdAt;
-    }
-
-    public LocalDateTime getUpdatedAt() {
-        return updatedAt;
-    }
-
 }

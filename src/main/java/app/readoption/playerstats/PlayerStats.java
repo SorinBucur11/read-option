@@ -4,6 +4,7 @@ import app.readoption.player.Player;
 import app.readoption.scoring.StatLine;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
+import lombok.*;
 import org.springframework.data.domain.Persistable;
 import org.springframework.lang.Nullable;
 
@@ -12,6 +13,11 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "player_stats")
 @IdClass(PlayerStatsId.class)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class PlayerStats implements Persistable<PlayerStatsId>, StatLine {
 
     @Id
@@ -52,14 +58,8 @@ public class PlayerStats implements Persistable<PlayerStatsId>, StatLine {
 
     @Transient
     @JsonIgnore
+    @Builder.Default
     private boolean isNew = true;
-
-    protected PlayerStats() {}
-
-    public PlayerStats(String playerId, int year) {
-        this.playerId = playerId;
-        this.year = year;
-    }
 
     @Nullable
     @Override
@@ -76,179 +76,14 @@ public class PlayerStats implements Persistable<PlayerStatsId>, StatLine {
         this.isNew = false;
     }
 
-    public String getPlayerId() {
-        return playerId;
+    @PrePersist
+    protected void onCreate() {
+        this.createdAt = LocalDateTime.now();
+        this.updatedAt = LocalDateTime.now();
     }
 
-    public void setPlayerId(String playerId) {
-        this.playerId = playerId;
-    }
-
-    public int getYear() {
-        return year;
-    }
-
-    public void setYear(int year) {
-        this.year = year;
-    }
-
-    public Player getPlayer() {
-        return player;
-    }
-
-    public void setPlayer(Player player) {
-        this.player = player;
-    }
-
-    public String getTeam() {
-        return team;
-    }
-
-    public void setTeam(String team) {
-        this.team = team;
-    }
-
-    public int getGames() {
-        return games;
-    }
-
-    public void setGames(int games) {
-        this.games = games;
-    }
-
-    public Integer getGamesPlayed() {
-        return gamesPlayed;
-    }
-
-    public void setGamesPlayed(Integer gamesPlayed) {
-        this.gamesPlayed = gamesPlayed;
-    }
-
-    public Integer getPassAttempts() {
-        return passAttempts;
-    }
-
-    public void setPassAttempts(Integer passAttempts) {
-        this.passAttempts = passAttempts;
-    }
-
-    public Integer getPassesCompleted() {
-        return passesCompleted;
-    }
-
-    public void setPassesCompleted(Integer passesCompleted) {
-        this.passesCompleted = passesCompleted;
-    }
-
-    public Integer getPassingYards() {
-        return passingYards;
-    }
-
-    public void setPassingYards(Integer passingYards) {
-        this.passingYards = passingYards;
-    }
-
-    public Integer getPassingTd() {
-        return passingTd;
-    }
-
-    public void setPassingTd(Integer passingTd) {
-        this.passingTd = passingTd;
-    }
-
-    public Integer getInterceptions() {
-        return interceptions;
-    }
-
-    public void setInterceptions(Integer interceptions) {
-        this.interceptions = interceptions;
-    }
-
-    public Integer getRushingAttempts() {
-        return rushingAttempts;
-    }
-
-    public void setRushingAttempts(Integer rushingAttempts) {
-        this.rushingAttempts = rushingAttempts;
-    }
-
-    public Integer getRushingYards() {
-        return rushingYards;
-    }
-
-    public void setRushingYards(Integer rushingYards) {
-        this.rushingYards = rushingYards;
-    }
-
-    public Integer getRushingTd() {
-        return rushingTd;
-    }
-
-    public void setRushingTd(Integer rushingTd) {
-        this.rushingTd = rushingTd;
-    }
-
-    public Integer getTargets() {
-        return targets;
-    }
-
-    public void setTargets(Integer targets) {
-        this.targets = targets;
-    }
-
-    public Integer getReceptions() {
-        return receptions;
-    }
-
-    public void setReceptions(Integer receptions) {
-        this.receptions = receptions;
-    }
-
-    public Integer getReceivingYards() {
-        return receivingYards;
-    }
-
-    public void setReceivingYards(Integer receivingYards) {
-        this.receivingYards = receivingYards;
-    }
-
-    public Integer getReceivingTd() {
-        return receivingTd;
-    }
-
-    public void setReceivingTd(Integer receivingTd) {
-        this.receivingTd = receivingTd;
-    }
-
-    public Integer getFumblesLost() {
-        return fumblesLost;
-    }
-
-    public void setFumblesLost(Integer fumblesLost) {
-        this.fumblesLost = fumblesLost;
-    }
-
-    public Integer getTwoPtConv() {
-        return twoPtConv;
-    }
-
-    public void setTwoPtConv(Integer twoPtConv) {
-        this.twoPtConv = twoPtConv;
-    }
-
-    public LocalDateTime getCreatedAt() {
-        return createdAt;
-    }
-
-    public void setCreatedAt(LocalDateTime createdAt) {
-        this.createdAt = createdAt;
-    }
-
-    public LocalDateTime getUpdatedAt() {
-        return updatedAt;
-    }
-
-    public void setUpdatedAt(LocalDateTime updatedAt) {
-        this.updatedAt = updatedAt;
+    @PreUpdate
+    protected void onUpdate() {
+        this.updatedAt = LocalDateTime.now();
     }
 }

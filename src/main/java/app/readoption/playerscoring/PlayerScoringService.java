@@ -54,15 +54,14 @@ public class PlayerScoringService {
             for (ScoringFormat format : ScoringFormat.values()) {
                 ScoringResult result = scoringService.calculate(stats, format);
 
-                PlayerScoring scoring = new PlayerScoring();
-                scoring.setPlayerId(stats.getPlayerId());
-                scoring.setYear(season);
-                scoring.setScoringFormat(format.name());
-                scoring.setTotalPoints(result.totalPoints());
-                scoring.setPointsPerGame(result.pointsPerGame());
-                scoring.setGamesPlayed(stats.getGamesPlayed() != null ?
-                        stats.getGamesPlayed() :
-                        0);
+                PlayerScoring scoring = PlayerScoring.builder()
+                        .playerId(stats.getPlayerId())
+                        .year(season)
+                        .scoringFormat(format.name())
+                        .totalPoints(result.totalPoints())
+                        .pointsPerGame(result.pointsPerGame())
+                        .gamesPlayed(stats.getGamesPlayed() != null ? stats.getGamesPlayed() : 0)
+                        .build();
 
                 if (existingIds.contains(scoring.getId())) {
                     scoring.markExisting();
