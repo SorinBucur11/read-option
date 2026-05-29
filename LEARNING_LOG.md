@@ -322,6 +322,19 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | **`BigDecimal` String constructor** | `new BigDecimal("0.04")` parses exact decimal. `new BigDecimal(0.04)` uses the double value which can't represent 0.04 exactly. Always use String constructor for precise decimals. |
 | **Physical naming strategy** | Hibernate layer that converts Java field names to database column names. Spring Boot configures `CamelCaseToUnderscoresNamingStrategy`: `fumblesLost` → `fumbles_lost`. |
 | **`@DisplayName`** | JUnit 5 annotation. Provides human-readable test names in output instead of method names. Documents what each test verifies. |
+| **@PrePersist / @PreUpdate** | JPA lifecycle callbacks. Methods called automatically before INSERT and UPDATE. Standard way to handle audit timestamps — entity owns its timestamp logic. |
+| **@Query (JPQL)** | Custom queries beyond Spring Data method naming. Operates on entity classes and field names (not tables/columns). Portable across databases. `nativeQuery = true` for raw SQL. |
+| **ResponseEntity** | Spring class for explicit HTTP response control — status code, headers, body. Used for action endpoints where a plain object return isn't informative enough. |
+| **Lombok** | Compile-time annotation processor generating boilerplate (getters, setters, builders, constructors). Absent at runtime — marked `<optional>` in Maven. |
+| **@Builder (Lombok)** | Generates a builder pattern for a class. Use `@Builder.Default` to preserve field initializers. Requires `@AllArgsConstructor` + `@NoArgsConstructor` for JPA entities. |
+| **@Builder.Default** | Tells Lombok's builder to use the field initializer value instead of the type default. Critical for `isNew = true` in Persistable entities. |
+| **@Data (Lombok)** | Dangerous on JPA entities. Combines @Getter + @Setter + @ToString + @EqualsAndHashCode + @RequiredArgsConstructor. The generated equals/hashCode on all fields breaks Hibernate. |
+| **@EqualsAndHashCode (Lombok)** | Safe on ID/value classes. Dangerous on JPA entities — generates equals/hashCode using all fields, breaking Hibernate Sets and triggering lazy loading. |
+| **AOP proxy (Spring)** | Wrapper object Spring creates around beans to add cross-cutting behavior (@Transactional, @Cacheable). External calls go through the proxy; internal `this` calls bypass it. |
+| **Self-call proxy bypass** | When a bean method calls another method on the same bean via `this`, it bypasses the AOP proxy. @Transactional on the inner method is ignored. Fix: extract to a separate bean. |
+| **Computed/derived table** | Database table populated entirely by application logic (e.g., scoring results). Can be fully recomputed. FKs often unnecessary — application guarantees integrity. |
+| **Leftmost prefix rule** | A composite index on (A, B, C) supports queries on A, A+B, or A+B+C. Queries on B or C alone can't use it. Determines whether a separate index is needed. |
+| **show-sql vs SLF4J logging** | `show-sql=true` bypasses the logging framework (no timestamps, no levels). Production: use `logging.level.org.hibernate.SQL=DEBUG` for controllable SQL logging. |
 
 ### Fantasy Football Domain
 
@@ -361,9 +374,13 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | Interface extraction | ✅ Done (Week 3 Day 4) — StatLine for scoring abstraction |
 | Unit testing (JUnit 5) | ✅ Done (Week 3 Day 4) — ScoringServiceTest |
 | External projections | Phase 1 Week 4 (Sleeper projections API) |
-| Player scoring table | Phase 1 Week 4 (Flyway V4, entity, repository) |
+| Player scoring table | ✅ Done (Week 4 Day 1) — Flyway V4, entity, repository, wired into sync |
 | Entity/DTO separation | Phase 1–2 (new entities get DTOs from start; existing refactored when touched) |
 | League settings persistence | Phase 3 (user customization) |
+| Lombok | ✅ Done (Week 4 Day 1) — all entities refactored |
+| @PrePersist/@PreUpdate | ✅ Done (Week 4 Day 1) — JPA lifecycle callbacks for audit timestamps |
+| @Query with JPQL | ✅ Done (Week 4 Day 1) — findDistinctYears() |
+| Computed/derived tables | ✅ Done (Week 4 Day 1) — player_scoring, no FK, application-guaranteed integrity |
 
 ---
 
@@ -407,7 +424,7 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 - [x] Detour 2 — Spring MVC request lifecycle (DispatcherServlet, HandlerMapping, HttpMessageConverter)
 - [x] Detour 3 — JPA Relationships deep dive (owning side, lazy/eager, N+1, composite keys, @IdClass)
 
-**Hours invested so far:** 36h
+**Hours invested so far:** 43h
 
 ---
 
@@ -425,6 +442,7 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 - Spring AI 1.1.6 (Anthropic Claude)
 - Sleeper API (free NFL data)
 - Docker + Docker Compose
+- Lombok (compile-time code generation)
 
 ### Package naming decision
 - Used reverse domain convention: own `readoption.app` → base package `app.readoption`
@@ -829,14 +847,191 @@ read-option/
             └── ScoringServiceTest.java         ← 8 unit tests, no Spring context
 ```
 
+---
+
+### Week 4 Day 1 — Player Scoring Persistence + Lombok Refactor
+**Time:** ~4h
+
+**What I built**
+- `V4__create_player_scoring_table.sql` — Flyway migration with 3-column composite PK
+- `PlayerScoringId` — composite ID class (Lombok: @Getter, @NoArgsConstructor, @AllArgsConstructor, @EqualsAndHashCode)
+- `PlayerScoring` — JPA entity with Persistable, @Builder, @PrePersist/@PreUpdate
+- `PlayerScoringRepository` — Spring Data JPA with derived queries
+- `PlayerScoringService` — orchestrates scoring persistence (compute all 6 formats per stat line)
+- `PlayerScoringController` — compute, recompute, and query endpoints
+- Wired scoring into `PlayerStatsSyncService` — auto-computes after every stats sync
+- Added `findDistinctYears()` JPQL query to `PlayerStatsRepository`
+- Refactored ALL entities and ID classes to Lombok (@Getter, @Setter, @Builder, etc.)
+- Switched from `show-sql=true` to SLF4J-based Hibernate SQL logging
+- Total: ~115,584 scoring rows (19,264 stat lines × 6 formats)
+
+**Design decisions**
+
+1. **3-column PK, no source discriminator**
+   - PK: `(player_id, year, scoring_format)` — not 4 columns
+   - Rejected `source` column (HISTORICAL vs PROJECTED) because the year itself is the discriminator — past years are always historical, current year is always projected
+   - YAGNI: the source column solves a problem the app doesn't have
+   - **Interview line:** *"I considered a source discriminator column but rejected it — the year inherently distinguishes historical from projected data. Adding a column to 'future-proof' against a problem that doesn't exist violates YAGNI and complicates every query."*
+
+2. **No FK on computed table**
+   - `player_scoring` is derived — always populated by application logic, never manually edited
+   - Both historical stats and future projections will score into this table
+   - A FK to `player_stats` would break when projection scores (no matching stat line) arrive
+   - Application guarantees data integrity through the scoring pipeline
+   - **Interview line:** *"Foreign keys enforce referential integrity at the database level, which is critical for source-of-truth tables. For derived or computed tables that are always populated by application logic and can be fully recomputed, FKs add constraint management overhead without meaningful safety gains."*
+
+3. **Compute all 6 formats, not just MVP**
+   - 15,000 × 6 = 90,000 rows is trivial for PostgreSQL
+   - Pre-computed means query endpoints can serve any format without recomputing
+   - Adding a format = adding an enum value + recompute, no schema changes
+
+4. **Denormalized `games_played`**
+   - Copied from `player_stats` into `player_scoring` for leaderboard filtering ("minimum 10 games")
+   - Safe because scoring rows are always computed alongside the stat line — values stay consistent
+   - Avoids a JOIN on the most common query pattern
+
+**Leftmost prefix rule for composite indexes**
+- PK index on `(player_id, year, scoring_format)` already covers queries filtering by `player_id` alone
+- PostgreSQL can use the leftmost columns of a composite index
+- Separate index on `player_id` would be redundant
+- Added `idx_scoring_year_format` on `(year, scoring_format)` for leaderboard queries — PK index can't help here because `year` isn't the leftmost column
+- **Interview line:** *"A composite index on (A, B, C) supports queries filtering on A, on A+B, and on A+B+C — the leftmost prefix rule. A separate index on A alone would be redundant. But a query filtering only on B or C can't use this index — that's why I added a separate index on (year, scoring_format) for leaderboard queries."*
+
+**`@PrePersist` and `@PreUpdate` — JPA lifecycle callbacks**
+- Methods that JPA calls automatically before INSERT (`@PrePersist`) and before UPDATE (`@PreUpdate`)
+- Standard way to handle audit timestamps — entity owns its own timestamp logic
+- `DEFAULT CURRENT_TIMESTAMP` in migrations only fires on INSERT, not UPDATE (would need a DB trigger for that)
+- Applied to all three entities: Player, PlayerStats, PlayerScoring
+- **Interview line:** *"`@PrePersist` and `@PreUpdate` are JPA lifecycle callbacks that fire before INSERT and UPDATE respectively. They're the standard way to handle audit timestamps in JPA — the entity owns its own timestamp logic rather than relying on database-level defaults or triggers."*
+
+**`@Query` with JPQL — custom queries beyond method naming**
+- `findDistinctYears()` can't be expressed through Spring Data's method naming convention
+- JPQL operates on entity classes and field names, not tables and columns: `SELECT DISTINCT ps.year FROM PlayerStats ps`
+- Hibernate translates JPQL to SQL using entity mappings
+- Return type matches the query: `SELECT ps.year` returns Integer, method returns `List<Integer>`
+- For database-specific features (window functions, CTEs): `nativeQuery = true` drops to raw SQL
+- **Interview line:** *"`@Query` with JPQL is for queries that can't be expressed through Spring Data's method naming convention — projections, aggregations, complex joins. JPQL operates on entity classes and field names, not tables and columns, so it stays portable across databases."*
+
+**`ResponseEntity` — explicit HTTP response control**
+- Query endpoints return objects directly (Spring auto-wraps with 200 OK + JSON)
+- Action endpoints (compute, recompute) use `ResponseEntity.ok("message")` for informative responses
+- Gives explicit control over status code, headers, and body when needed
+- **Interview line:** *"`ResponseEntity` gives explicit control over the HTTP status code, headers, and body. For CRUD reads I return objects directly — Spring auto-wraps with 200 OK. For actions like recompute or sync, I use `ResponseEntity` to return an informative message with an explicit status."*
+
+**`@Transactional` self-call proxy bypass — deep understanding**
+- Spring wraps beans in AOP proxies. `@Transactional` behavior lives on the proxy, not the actual object.
+- External calls go through the proxy → transaction management applied
+- Internal calls via `this` go directly to the real object → proxy is bypassed → `@Transactional` annotation is invisible
+- In `PlayerScoringService`: `recomputeAllSeasons()` calls `computeAndSaveForSeason()` internally — one big transaction wraps all seasons. If season 2022 fails, all seasons roll back (desirable for recompute).
+- When `computeAndSaveForSeason()` is called from the controller (external call), it gets its own transaction.
+- Fix for independent transactions: extract into a separate bean so each call goes through its own proxy.
+- **Interview line:** *"Spring's `@Transactional` works through AOP proxies that wrap the bean. External calls go through the proxy and get transaction management. Internal self-calls via `this` bypass the proxy entirely — the annotation is invisible. If I need independent transactions on internal calls, I extract the method into a separate bean so each call gets its own proxy."*
+
+**Lombok — production-standard boilerplate elimination**
+- Compile-time annotation processor — generates code during compilation, absent at runtime
+- Marked `<optional>true</optional>` in Maven — not in the packaged jar
+- IntelliJ requires annotation processing enabled + Lombok plugin
+- Applied to all entities and ID classes in the project
+
+**Lombok annotations for JPA — safe vs dangerous:**
+
+| Annotation | Safe on entities? | Notes |
+|---|---|---|
+| `@Getter` | Yes | Always safe |
+| `@Setter` | Yes | Always safe |
+| `@NoArgsConstructor` | Yes | JPA requires it |
+| `@AllArgsConstructor` | Yes | Needed by `@Builder` |
+| `@Builder` | Yes | Use `@Builder.Default` for field initializers |
+| `@ToString` | Careful | Exclude lazy relationships with `@ToString.Exclude` |
+| `@EqualsAndHashCode` | ID classes only | Never on entities with lazy fields |
+| `@Data` | **No** | Includes dangerous `@EqualsAndHashCode` on all fields |
+
+**Why `@Data` is dangerous on JPA entities:**
+- `@Data` = `@Getter` + `@Setter` + `@ToString` + `@EqualsAndHashCode` + `@RequiredArgsConstructor`
+- `@EqualsAndHashCode` on all fields breaks Hibernate Set-based collections (hash changes after entity is added)
+- Can trigger `LazyInitializationException` when `equals()` touches lazy-loaded fields
+- **Interview line:** *"Never use `@Data` on JPA entities. It generates `equals` and `hashCode` using all fields, which breaks Hibernate's Set-based collections and can trigger lazy loading exceptions. Use `@Getter` and `@Setter` explicitly. If you need `equals`/`hashCode` on an entity, base it on the business key — never include mutable or lazy fields."*
+
+**`@Builder.Default` — the critical gotcha**
+- Without it, `@Builder` ignores field initializers (`= true`, `= new ArrayList<>()`)
+- The builder has its own construction path that doesn't go through field initialization
+- `isNew = true` becomes `isNew = false` (boolean default) without `@Builder.Default`
+- Result: Persistable silently regresses to SELECT-before-INSERT behavior
+- **Interview line:** *"`@Builder.Default` preserves field initializers when using Lombok's builder. Without it, the builder ignores `= true` on a boolean field and defaults to `false`. This is a common Lombok gotcha — the builder bypasses field initializers because it uses its own generated constructor."*
+
+**`show-sql` vs SLF4J SQL logging**
+- `spring.jpa.show-sql=true` prints to stdout, bypassing the logging framework — no timestamps, no log levels
+- Production approach: `logging.level.org.hibernate.SQL=DEBUG` routes through SLF4J
+- `logging.level.org.hibernate.type.descriptor.sql.BasicBinder=DEBUG` shows bind parameter values
+- Both set to WARN for normal development, toggle to DEBUG when investigating specific queries
+- **Interview line:** *"`spring.jpa.show-sql` prints SQL to stdout, bypassing the logging framework. In production, route Hibernate SQL through SLF4J by configuring `logging.level.org.hibernate.SQL=DEBUG`. This way SQL logging is controlled by the same logging infrastructure as everything else."*
+
+**Scoring data validation**
+- 115,584 total scoring rows across 5 seasons × 6 formats
+- Validated Josh Allen (player 4046) 2021 season: STANDARD_4PT (374.66) vs STANDARD_6PT (448.66) — 74-point gap ÷ 2 = 37 passing TDs. Matches real NFL data (36 TDs + 1 rushing/receiving TD scored differently). Scoring engine confirmed correct.
+
+**Mistakes caught in code review**
+1. **Missing `@Builder.Default` on `isNew`** in Player and PlayerStats — had it in PlayerScoring but forgot the other two entities. Without it, builder defaults `isNew` to `false`, silently breaking the Persistable upsert optimization.
+2. **`passesCompleted` dropped from builder chain** in `PlayerStatsSyncService` — refactoring from setters to builder lost one field. Would have nulled that column for all rows.
+3. **Missing `@JsonIgnore` on `getId()`** — `Persistable.getId()` serialized a redundant `id` object in JSON responses. Same pattern as `isNew()` which was already `@JsonIgnore`'d.
+
+### Project structure (updated)
+```
+read-option/
+├── docker-compose.yml
+├── pom.xml                                     ← added Lombok dependency
+└── src/
+    ├── main/java/app/readoption/
+    │   ├── ReadOptionApplication.java
+    │   ├── player/
+    │   │   ├── Player.java                     ← Lombok + @PrePersist/@PreUpdate
+    │   │   ├── PlayerRepository.java
+    │   │   ├── PlayerSyncService.java          ← uses Builder
+    │   │   └── PlayerController.java
+    │   ├── playerstats/
+    │   │   ├── PlayerStats.java                ← Lombok + @PrePersist/@PreUpdate
+    │   │   ├── PlayerStatsId.java              ← Lombok (@EqualsAndHashCode)
+    │   │   ├── PlayerStatsRepository.java      ← added findDistinctYears() @Query
+    │   │   ├── PlayerStatsSyncService.java     ← uses Builder + triggers scoring
+    │   │   └── PlayerStatsController.java
+    │   ├── playerscoring/                      ← NEW PACKAGE
+    │   │   ├── PlayerScoring.java              ← Lombok, Persistable, @PrePersist/@PreUpdate
+    │   │   ├── PlayerScoringId.java            ← Lombok (@EqualsAndHashCode)
+    │   │   ├── PlayerScoringRepository.java
+    │   │   ├── PlayerScoringService.java       ← compute all formats, recompute all seasons
+    │   │   └── PlayerScoringController.java    ← compute/recompute/query endpoints
+    │   ├── scoring/
+    │   │   ├── Position.java
+    │   │   ├── StatLine.java
+    │   │   ├── ScoringFormat.java
+    │   │   ├── ScoringResult.java
+    │   │   ├── ScoringService.java
+    │   │   └── LeagueSettings.java
+    │   └── sleeper/
+    │       ├── SleeperClient.java
+    │       ├── SleeperPlayer.java
+    │       ├── SleeperPlayerStats.java
+    │       └── SleeperStatsData.java
+    ├── resources/
+    │   ├── application.properties              ← SLF4J SQL logging config
+    │   └── db/migration/
+    │       ├── V1__create_player_table.sql
+    │       ├── V2__create_player_stats_table.sql
+    │       ├── V3__add_fumbles_lost_to_player_stats.sql
+    │       └── V4__create_player_scoring_table.sql  ← NEW
+    └── test/java/app/readoption/
+        └── scoring/
+            └── ScoringServiceTest.java
+```
+
 ### Week 3 Status
 - [x] Day 1 — Project setup, Docker Compose, Flyway V1, Player entity + repository
 - [x] Day 2 — Sleeper API integration, PlayerSyncService, ETL pipeline (3,217 players)
 - [x] Day 3 — Player stats: schema, entities, JPA relationships, stats sync (5 seasons, ~15k stat lines)
 - [x] Day 4 — Fantasy scoring engine: 5 architectural decisions, ScoringService, StatLine interface, Position enum, first unit tests, V3 migration (fumbles_lost)
 
-### Week 4 Plan
-- [ ] Day 1 — `player_scoring` table (Flyway V4), entity, repository, wire into stats sync + recompute endpoint
+### Week 4 Status
+- [x] Day 1 — `player_scoring` table (Flyway V4), entity with Lombok, scoring pipeline wired into stats sync, recompute endpoint, Lombok refactor across all entities
 - [ ] Day 2 — `player_projections` table (Flyway V5), Sleeper projections fetch, sync pipeline
 - [ ] Day 3 — Score projections through ScoringService, store results
 - [ ] Day 4 — Query endpoints: top N by projected points, player detail with historical trend + projection
@@ -1470,6 +1665,9 @@ spring-ai-playground/
 - Property placeholder resolution (`${PROP}`) and the layered config hierarchy
 - API key handling: dev env vars vs production secret managers
 - `CommandLineRunner` — what it is and when it fires in the startup lifecycle
+- `@Transactional` self-call proxy bypass: internal calls via `this` skip the AOP proxy — annotation is invisible
+- Why the fix for independent transactions is extracting to a separate bean (each gets its own proxy)
+- `ResponseEntity` for explicit HTTP response control vs returning objects directly
 
 **Spring AI**
 - Spring AI is an abstraction over multiple LLM providers (Anthropic, OpenAI, Mistral, Ollama)
@@ -1519,6 +1717,12 @@ spring-ai-playground/
 - `Set.of()` throws NPE on `contains(null)` — explicit null checks before collection operations
 - Optional: method return types only, not fields/DTOs/parameters
 - Idempotent sync: first run INSERTs, subsequent runs UPDATE — upsert pattern with `Persistable`
+- `@PrePersist`/`@PreUpdate` lifecycle callbacks vs database defaults for audit timestamps
+- `@Query` with JPQL for custom queries beyond method naming (projections, aggregations)
+- JPQL vs native SQL: entity/field names vs table/column names, portability tradeoffs
+- Computed/derived tables: no FK needed when application guarantees integrity and data is fully recomputable
+- Leftmost prefix rule: composite index on (A, B, C) covers queries on A, A+B, A+B+C — separate A index is redundant
+- `show-sql=true` bypasses logging framework — production uses `logging.level.org.hibernate.SQL`
 
 **JPA / Hibernate**
 - `@ManyToOne` owning side — the entity whose table has the FK column
@@ -1547,6 +1751,11 @@ spring-ai-playground/
 - Claude's role: strategic reasoning over structured data, not statistical prediction
 - `BigDecimal` String constructor vs double constructor — exact decimal representation
 - Entity/DTO separation strategy: new entities get DTOs from start, existing refactored when touched
+- Computed scoring table with 3-column composite PK — no source discriminator (year is the discriminator)
+- No FK on derived tables — application guarantees integrity, FK would break when projections land
+- Scoring pipeline wired into stats sync: save stats → auto-compute all 6 formats → persist
+- Recompute endpoint for formula iteration during development — same ScoringService, different trigger
+- Denormalized games_played in scoring table — safe because computed alongside source data
 
 **Interface Design / Testing**
 - Extracted interface pattern: designing `StatLine` from existing `PlayerStats` getters
@@ -1554,3 +1763,12 @@ spring-ai-playground/
 - Anonymous interface implementations for zero-infrastructure unit testing
 - `@DisplayName` for self-documenting test suites
 - Primitive vs wrapper return types in interface implementation: `int` does not satisfy `Integer`
+
+**Lombok**
+- Lombok is compile-time only — generates bytecode during compilation, absent at runtime (marked `<optional>`)
+- Safe on JPA entities: @Getter, @Setter, @NoArgsConstructor, @AllArgsConstructor, @Builder
+- Dangerous on JPA entities: @Data (generates equals/hashCode on all fields, breaks Hibernate)
+- @EqualsAndHashCode: safe on ID/value classes, dangerous on entities with lazy fields
+- @Builder.Default preserves field initializers — without it, builder ignores `= true` and uses type default
+- IntelliJ requires annotation processing enabled + Lombok plugin
+- Static factory method vs @Builder: factory methods have names, support multiple creation paths; @Builder is for many-field construction
