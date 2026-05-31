@@ -349,6 +349,9 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | **ADP (Average Draft Position)** | Where a player is typically drafted across many leagues. Gap between actual value and ADP = draft value. |
 | **Roster configuration** | Number of starters per position (1QB/2RB/2WR/1TE/1FLEX). Determines which positions are scarce and therefore valuable. |
 | **Flex slot** | Roster spot that accepts multiple positions (typically RB or WR). Increases demand for those positions. |
+| **TE premium** | Scoring variant awarding tight ends extra points per reception (e.g., 1.5 vs 1.0). Position-dependent rule — can't be expressed by a format that only varies reception value and passing-TD value. Needs a parameterized ScoringRules + player position. |
+| **ADP sentinel (999)** | Sleeper's "unranked" marker in ADP fields. Converted to NULL in the ETL so sorting doesn't bury undrafted players, and to stay inside `NUMERIC(5,2)`. |
+| **Projection provider vs aggregator** | Sleeper aggregates projections from providers (the `company` field, e.g. rotowire). The provider is the real provenance — what gets stored in `source`. |
 
 ---
 
@@ -373,7 +376,7 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | Position enum | ✅ Done (Week 3 Day 4) |
 | Interface extraction | ✅ Done (Week 3 Day 4) — StatLine for scoring abstraction |
 | Unit testing (JUnit 5) | ✅ Done (Week 3 Day 4) — ScoringServiceTest |
-| External projections | Phase 1 Week 4 (Sleeper projections API) |
+| External projections | ✅ Done (Week 4 Day 2) — Sleeper/rotowire seasonal projections |
 | Player scoring table | ✅ Done (Week 4 Day 1) — Flyway V4, entity, repository, wired into sync |
 | Entity/DTO separation | Phase 1–2 (new entities get DTOs from start; existing refactored when touched) |
 | League settings persistence | Phase 3 (user customization) |
@@ -381,6 +384,9 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | @PrePersist/@PreUpdate | ✅ Done (Week 4 Day 1) — JPA lifecycle callbacks for audit timestamps |
 | @Query with JPQL | ✅ Done (Week 4 Day 1) — findDistinctYears() |
 | Computed/derived tables | ✅ Done (Week 4 Day 1) — player_scoring, no FK, application-guaranteed integrity |
+| Projections table + ADP capture | ✅ Done (Week 4 Day 2) — player_projections, FK to player, per-format ADP, source provenance |
+| Parameterized scoring rules (ScoringRules) | Phase 3 (TE premium, arbitrary user formats) |
+| Scoring source-routing (projections vs actuals) | Phase 1 Week 4 Day 3 |
 
 ---
 
@@ -1024,6 +1030,84 @@ read-option/
             └── ScoringServiceTest.java
 ```
 
+### Week 4 Day 2 — Projections: Schema, Sync Pipeline + the Scoring/LLM Boundary
+**Time:** ~4h
+
+**What I built**
+- `V5__create_player_projections_table.sql` — composite PK `(player_id, year)`, FK to `player`, three per-format ADP columns (`adp_std`/`adp_half_ppr`/`adp_ppr` as `NUMERIC(5,2)`), index on `year`
+- `PlayerProjectionId` — composite ID class (Lombok, `Serializable`, `@EqualsAndHashCode`)
+- `PlayerProjection` — JPA entity (Persistable, Lombok `@Builder`, `@PrePersist`/`@PreUpdate`, two-field FK pattern, fields named to match `StatLine` so Day 3's wiring is a one-word change)
+- `PlayerProjectionRepository` — `findByYear`, `findByPlayerId`
+- `SleeperProjection` + `SleeperProjectionData` — DTO records (defensive parsing, `@JsonIgnoreProperties(ignoreUnknown = true)`)
+- `SleeperClient.fetchProjections(int season)` — third Sleeper endpoint
+- `PlayerProjectionSyncService` — `@Transactional`, filter → map → upsert
+- `PlayerProjectionController` — `POST /api/projections/sync/{season}`, `GET /api/projections/player/{id}`
+- Loaded 2026 rotowire projections; verified Mahomes (4046): 3773 pass yd, 28 pass TD, 11 INT, ADP ~100, `source=rotowire`, `gamesPlayed=17`
+
+**Verified the API before writing anything** — curled `/projections/nfl/2026` first. The Phase 0 lesson held: the payload was richer and shaped differently than I'd have assumed (embedded full `player` object, per-format ADP, provider-computed points, distance-bucketed receptions). Writing a migration against assumed field names would have been wrong.
+
+**Design decisions**
+
+1. **FK on source-data tables, no FK on computed tables.** `player_projections` references real players, so it gets a FK to `player` — exactly like `player_stats`. This corrected my earlier instinct to skip the FK "like `player_scoring`." The no-FK rule applies to *computed* tables I fully own and can recompute (scoring), not to *external source data* keyed to real entities (stats, projections). A projection pointing at a non-existent player is a genuine data error the DB should reject.
+   - **Interview line:** *"Foreign keys belong on tables holding external source data that references real entities — stats, projections — where a row pointing at a non-existent player is a genuine data error. I drop them on computed tables I fully own and can recompute, like scoring, where the FK is constraint-management overhead protecting against nothing."*
+
+2. **`source` from the payload's `company` field, not hardcoded.** Sleeper is the *aggregator*; the actual provider is `company: "rotowire"`. Storing real provenance is the foundation for Phase 2's multi-source reconciliation. Hardcoding "SLEEPER" would have thrown away the one piece of info that makes the column worth having.
+   - **Interview line:** *"I put a source discriminator on the raw projections table because reconciling multiple providers is a known upcoming requirement. I deliberately kept it off the computed scoring table — there the year already tells you historical-versus-projected, so a source column would solve a problem that doesn't exist."*
+
+3. **ADP is per-format → three columns; `999` → NULL.** ADP varies by PPR setting exactly like points do, so one column won't do. Sleeper encodes "unranked" as the sentinel `999`; the ETL converts it to NULL (which also keeps values inside `NUMERIC(5,2)`), so sorting doesn't bury undrafted players mid-draft.
+
+4. **`gamesPlayed = 17`, overriding rotowire's `gp = 18`.** 18 is the schedule length (18 weeks, one bye), not games anyone plays — and it's a constant across every player, so it's a label, not a projection. Cleansed at the ETL layer to keep projected PPG comparable to historical 17-game seasons.
+
+5. **Provider points (`pts_*`) parsed but NOT persisted — a cross-check, not a source of truth.** Rotowire ships `pts_std`/`pts_half_ppr`/`pts_ppr`, but my `ScoringService` owns fantasy points. I parse them only to validate my engine on Day 3. They use rotowire's conventions (4pt passing TD, −1 per INT), which differ from mine (−2 per INT), so the cross-check is: non-QBs match exactly, QBs differ by exactly the interception count.
+   - **Interview line:** *"Different projection providers use different scoring conventions — interceptions might be −1 or −2 depending on the platform. I treat a provider's precomputed points as a cross-check against my own scoring engine, never as ground truth, because my engine encodes the league's chosen rules, not the provider's."*
+
+6. **Single-source PK now; multi-source reconciliation deferred to Phase 2.** PK is `(player_id, year)` — one consensus projection per player/season. The scoring table has no source column (year discriminates), which is exactly what *forces* reconciliation upstream: Phase 2 adds a raw-per-source feeder, reconciles to one consensus row, then scores. Clean separation of "raw collection" from "consensus."
+
+7. **The scoring/LLM boundary (the conceptual core of the day).** A scoring convention the provider doesn't give me — 6pt passing TD, TE premium — is *deterministic math*, so it lives in the scoring engine, never the LLM.
+   - 6pt passing TD is already handled: the engine computes it from the raw projected stat line via `STANDARD_6PT`. I never depend on rotowire's 4pt `pts_*`.
+   - TE premium (1.5/reception for TEs) is a *position-dependent* rule my `ScoringFormat` enum can't express (it only varies reception value and passing-TD value). The fix is a parameterized `ScoringRules` value object plus passing player position into scoring — deferred to Phase 3 (user customization), where arbitrary formats get a real use case. The enum isn't thrown away; it graduates into a registry of preset rule-sets.
+   - The LLM's job is the *strategic interpretation*: comparing my engine's league-specific value against market ADP (a mostly-standard signal). "Goes round 8 in the standard market, worth round 6 in your 6pt league" — that gap is the product.
+   - **Interview line:** *"Scoring conventions are deterministic arithmetic, so they live in the scoring engine, never the model. The engine prices a player exactly for any format; the LLM reasons about strategy — how that league-specific value compares to market ADP, positional scarcity, roster construction. I never ask the model to estimate something I can compute."*
+
+8. **Did NOT auto-trigger scoring from the projection sync.** The stats sync ends by calling `computeAndSaveForSeason`, but that reads `player_stats`, which is empty for 2026. Scoring projections requires routing by source (projections for the upcoming season, actuals for past ones) — that's the Day 3 decision, so I deferred it rather than copy a pattern that doesn't transfer.
+   - **Interview line:** *"I didn't copy the stats sync's auto-trigger-scoring step into the projection sync, because scoring has to route by data source — projections for the upcoming season, actuals for completed ones. Reusing that path blindly would score an empty table."*
+
+**Mistakes I made and lessons**
+
+1. **`fetchProjections` used `statsBaseUrl` instead of `projectionsBaseUrl`.** The two endpoints share a response schema, so it compiled, returned 200, deserialized cleanly, and silently produced *stats masquerading as projections* (null `company`/ADP/pts). The Phase 0 "HTTP 200 ≠ logical success" lesson with a twist: when two endpoints share a shape, neither the compiler nor Jackson nor the status check can catch a wrong-endpoint bug — only the data is wrong.
+   - **Interview line:** *"When two API endpoints share a response schema, a wrong-endpoint bug passes compilation, deserialization, and the status check — only the data is wrong. Structural success isn't semantic correctness; the type system can't protect you when the shapes match."*
+
+2. **Hardcoded `source = "SLEEPER"`** instead of `source.company()` — would have discarded provenance. Also guarded against a null `company`: against the `NOT NULL` column it would roll back the entire `@Transactional` batch, so one bad row shouldn't nuke 600 good ones.
+
+3. **Three copy-paste string leftovers** — `fetchProjections`'s catch said "stats," the controller response said "stat lines." The logic copies cleanly; human-readable strings slip through because nothing references them. Lesson: after copying a method, grep the copy for the old noun.
+
+4. **`isNew()` leaked as `"new": true` in JSON.** `@JsonIgnore` on the `isNew` *field* doesn't suppress the `isNew()` *getter* — Jackson names the field property "isNew" but turns a boolean `isX()` getter into a separate property called "new" (JavaBeans), so the field annotation doesn't cover the getter. Fix: `@JsonIgnore` on the `isNew()` method, same as `getId()`. Applies to `PlayerStats` too — backport when touched.
+   - **Interview line:** *"Jackson turns a boolean getter `isNew()` into a property named `new`, separate from the field `isNew`. So `@JsonIgnore` on the field doesn't suppress the getter — you annotate the method. Classic boolean-property naming gotcha."*
+
+5. **`BigDecimal.valueOf(double)` for ADP, not `new BigDecimal(double)`** — the Week 3 Day 4 trap again; the double constructor would store `13.40000000…`.
+
+6. **`TypeReference<>` diamond vs explicit** — the diamond compiles in Java 17 (target-typed) but `TypeReference` exists to carry an explicit reified type; relying on inference is fragile under refactor. Kept it explicit, matching `fetchStats`.
+
+### Project structure (updated)
+```
+read-option/
+└── src/
+    ├── main/java/app/readoption/
+    │   ├── playerprojection/                    ← NEW PACKAGE
+    │   │   ├── PlayerProjection.java            ← Persistable, Lombok, two-field FK
+    │   │   ├── PlayerProjectionId.java          ← Lombok @EqualsAndHashCode
+    │   │   ├── PlayerProjectionRepository.java
+    │   │   ├── PlayerProjectionSyncService.java ← @Transactional, company→source, gp→17, 999→null
+    │   │   └── PlayerProjectionController.java   ← sync + by-player endpoints
+    │   └── sleeper/
+    │       ├── SleeperProjection.java           ← NEW DTO (top-level)
+    │       └── SleeperProjectionData.java        ← NEW DTO (nested stats + ADP + pts)
+    └── resources/db/migration/
+        └── V5__create_player_projections_table.sql  ← NEW
+```
+
+---
+
 ### Week 3 Status
 - [x] Day 1 — Project setup, Docker Compose, Flyway V1, Player entity + repository
 - [x] Day 2 — Sleeper API integration, PlayerSyncService, ETL pipeline (3,217 players)
@@ -1032,7 +1116,7 @@ read-option/
 
 ### Week 4 Status
 - [x] Day 1 — `player_scoring` table (Flyway V4), entity with Lombok, scoring pipeline wired into stats sync, recompute endpoint, Lombok refactor across all entities
-- [ ] Day 2 — `player_projections` table (Flyway V5), Sleeper projections fetch, sync pipeline
+- [x] Day 2 — `player_projections` table (Flyway V5), projection DTOs, `fetchProjections`, sync pipeline, controller; loaded 2026 rotowire projections
 - [ ] Day 3 — Score projections through ScoringService, store results
 - [ ] Day 4 — Query endpoints: top N by projected points, player detail with historical trend + projection
 
@@ -1723,6 +1807,13 @@ spring-ai-playground/
 - Computed/derived tables: no FK needed when application guarantees integrity and data is fully recomputable
 - Leftmost prefix rule: composite index on (A, B, C) covers queries on A, A+B, A+B+C — separate A index is redundant
 - `show-sql=true` bypasses logging framework — production uses `logging.level.org.hibernate.SQL`
+- FK on external-source tables (stats, projections) vs no-FK on computed tables (scoring) — referential integrity where rows reference real entities
+- Capturing provider provenance: `source` from the payload's `company` field (Sleeper aggregates rotowire), not hardcoded — foundation for multi-source reconciliation
+- Per-format ADP columns and the `999` "unranked" sentinel → NULL at the ETL layer
+- Cleansing a misleading source field: rotowire's `gp = 18` (schedule weeks) overridden to 17 (games played) for comparable PPG
+- Provider-computed points as a cross-check oracle, never a source of truth — scoring conventions differ across providers (−1 vs −2 per INT)
+- Structural success vs semantic correctness: a wrong-endpoint bug between same-schema endpoints passes compile/deserialize/status — only the data is wrong
+- `BigDecimal.valueOf(double)` vs `new BigDecimal(double)` for decimal columns like ADP
 
 **JPA / Hibernate**
 - `@ManyToOne` owning side — the entity whose table has the FK column
@@ -1742,6 +1833,8 @@ spring-ai-playground/
 - Hibernate physical naming strategy: `CamelCaseToUnderscoresNamingStrategy` (Spring Boot default)
 - When `@Column` is needed vs when naming convention handles it
 - Adding columns via Flyway migration + re-sync pattern for evolving ETL schemas
+- Jackson boolean-getter leak: `@JsonIgnore` on the `isNew` field doesn't suppress the `isNew()` getter (field property "isNew" vs getter property "new") — annotate the method
+- When the response is a single entity (not composite), returning the entity is on-policy; the DTO trigger is the response shape diverging from any single entity
 
 **Scoring / Business Logic Architecture**
 - Five interconnected architectural decisions for fantasy scoring (formula location, result storage, format handling, computation timing, PPG)
@@ -1756,6 +1849,10 @@ spring-ai-playground/
 - Scoring pipeline wired into stats sync: save stats → auto-compute all 6 formats → persist
 - Recompute endpoint for formula iteration during development — same ScoringService, different trigger
 - Denormalized games_played in scoring table — safe because computed alongside source data
+- The scoring/LLM boundary: deterministic scoring (6pt passing TD, TE premium) lives in the engine; the LLM reasons about strategy — league-specific value vs market ADP, scarcity, roster construction
+- Provider scoring conventions differ; the engine encodes the league's rules, not the provider's
+- Parameterized `ScoringRules` value object as the scalable path for arbitrary formats (Phase 3) — the enum graduates into a registry of presets, position passed into scoring for TE premium
+- Not auto-triggering scoring across data sources: scoring routes by source (projections vs actuals), so the stats-sync trigger doesn't transfer to the projection sync
 
 **Interface Design / Testing**
 - Extracted interface pattern: designing `StatLine` from existing `PlayerStats` getters
