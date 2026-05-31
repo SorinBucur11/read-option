@@ -26,9 +26,11 @@ public class SleeperClient {
     private final ObjectMapper mapper;
     private final String playersUrl;
     private final String statsBaseUrl;
+    private final String projectionsBaseUrl;
 
     public SleeperClient(@Value("${sleeper.api.players-url}") String playersUrl,
-                         @Value("${sleeper.api.stats-url}") String statsBaseUrl) {
+                         @Value("${sleeper.api.stats-url}") String statsBaseUrl,
+                         @Value("${sleeper.api.projections-url}") String projectionsBaseUrl) {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -36,6 +38,7 @@ public class SleeperClient {
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
         this.playersUrl = playersUrl;
         this.statsBaseUrl = statsBaseUrl;
+        this.projectionsBaseUrl = projectionsBaseUrl;
     }
 
     public Map<String, SleeperPlayer> fetchAllPlayers() {
@@ -98,6 +101,38 @@ public class SleeperClient {
         } catch (IOException | InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Failed to fetch stats from Sleeper API", e);
+        }
+    }
+
+    public List<SleeperProjection> fetchProjections(int season) {
+        String url = projectionsBaseUrl + "/" + season + "?season_type=regular";
+        log.info("Fetching projections from Sleeper for season {}: {}", season, url);
+
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .GET()
+                    .timeout(Duration.ofSeconds(30))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request,
+                    HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() != 200) {
+                throw new RuntimeException("Sleeper projections API returned " + response.statusCode());
+            }
+
+            List<SleeperProjection> projections = mapper.readValue(
+                    response.body(),
+                    new TypeReference<List<SleeperProjection>>() {}
+            );
+
+            log.info("Fetched {} player projections for season {}", projections.size(), season);
+            return projections;
+
+        } catch (IOException | InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Failed to fetch projections from Sleeper API", e);
         }
     }
 }
