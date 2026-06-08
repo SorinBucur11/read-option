@@ -1,7 +1,7 @@
 package app.readoption.playerstats;
 
 import app.readoption.player.Player;
-import app.readoption.scoring.StatLine;
+import app.readoption.scoring.Scorable;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.*;
@@ -18,7 +18,7 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-public class PlayerStats implements Persistable<PlayerStatsId>, StatLine {
+public class PlayerStats implements Persistable<PlayerStatsId>, Scorable {
 
     @Id
     @Column(name = "player_id")

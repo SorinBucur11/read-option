@@ -2,6 +2,7 @@ package app.readoption.playerprojection;
 
 import app.readoption.player.Player;
 import app.readoption.player.PlayerRepository;
+import app.readoption.playerscoring.PlayerScoringService;
 import app.readoption.sleeper.SleeperClient;
 import app.readoption.sleeper.SleeperProjection;
 import app.readoption.sleeper.SleeperProjectionData;
@@ -23,13 +24,16 @@ public class PlayerProjectionSyncService {
     private final SleeperClient sleeperClient;
     private final PlayerProjectionRepository playerProjectionRepository;
     private final PlayerRepository playerRepository;
+    private final PlayerScoringService playerScoringService;
 
     public PlayerProjectionSyncService(SleeperClient sleeperClient,
                                        PlayerProjectionRepository playerProjectionRepository,
-                                       PlayerRepository playerRepository) {
+                                       PlayerRepository playerRepository,
+                                       PlayerScoringService playerScoringService) {
         this.sleeperClient = sleeperClient;
         this.playerProjectionRepository = playerProjectionRepository;
         this.playerRepository = playerRepository;
+        this.playerScoringService = playerScoringService;
     }
 
     @Transactional
@@ -63,6 +67,10 @@ public class PlayerProjectionSyncService {
 
         playerProjectionRepository.saveAll(entities);
         log.info("Saved {} projections for season {}", entities.size(), season);
+
+        // Score the projections through all formats. computeAndSaveForSeason routes
+        // to projections for this season because player_stats has no rows for it yet.
+        playerScoringService.computeAndSaveForSeason(season);
 
         return entities.size();
     }

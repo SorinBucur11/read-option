@@ -30,7 +30,7 @@ public class ScoringService {
     private static final BigDecimal REC_YARDS_PTS = new BigDecimal("0.1");
     private static final BigDecimal RUSH_TD_PTS = new BigDecimal("6");
     private static final BigDecimal REC_TD_PTS = new BigDecimal("6");
-    private static final BigDecimal INT_PTS = new BigDecimal("-1");
+    private static final BigDecimal INT_PTS = new BigDecimal("-2");
     private static final BigDecimal FUMBLE_LOST_PTS = new BigDecimal("-2");
     private static final BigDecimal TWO_PT_CONV_PTS = new BigDecimal("2");
 

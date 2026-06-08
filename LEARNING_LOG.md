@@ -386,7 +386,7 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | Computed/derived tables | ✅ Done (Week 4 Day 1) — player_scoring, no FK, application-guaranteed integrity |
 | Projections table + ADP capture | ✅ Done (Week 4 Day 2) — player_projections, FK to player, per-format ADP, source provenance |
 | Parameterized scoring rules (ScoringRules) | Phase 3 (TE premium, arbitrary user formats) |
-| Scoring source-routing (projections vs actuals) | Phase 1 Week 4 Day 3 |
+| Scoring source-routing (projections vs actuals) | ✅ Done (Week 4 Day 3) — config-driven (current-season boundary) |
 
 ---
 
@@ -1081,7 +1081,7 @@ read-option/
 
 3. **Three copy-paste string leftovers** — `fetchProjections`'s catch said "stats," the controller response said "stat lines." The logic copies cleanly; human-readable strings slip through because nothing references them. Lesson: after copying a method, grep the copy for the old noun.
 
-4. **`isNew()` leaked as `"new": true` in JSON.** `@JsonIgnore` on the `isNew` *field* doesn't suppress the `isNew()` *getter* — Jackson names the field property "isNew" but turns a boolean `isX()` getter into a separate property called "new" (JavaBeans), so the field annotation doesn't cover the getter. Fix: `@JsonIgnore` on the `isNew()` method, same as `getId()`. Applies to `PlayerStats` too — backport when touched.
+4. **`isNew()` leaked as `"new": true` in JSON.** `@JsonIgnore` on the `isNew` *field* doesn't suppress the `isNew()` *getter* — Jackson names the field property "isNew" but turns a boolean `isX()` getter into a separate property called "new" (JavaBeans), so the field annotation doesn't cover the getter. Fix: `@JsonIgnore` on the `isNew()` method, same as `getId()`. Applies to `PlayerStats` too (backported — `@JsonIgnore` now on `isNew()` and `getId()` on both entities).
    - **Interview line:** *"Jackson turns a boolean getter `isNew()` into a property named `new`, separate from the field `isNew`. So `@JsonIgnore` on the field doesn't suppress the getter — you annotate the method. Classic boolean-property naming gotcha."*
 
 5. **`BigDecimal.valueOf(double)` for ADP, not `new BigDecimal(double)`** — the Week 3 Day 4 trap again; the double constructor would store `13.40000000…`.
@@ -1108,6 +1108,53 @@ read-option/
 
 ---
 
+### Week 4 Day 3 — Scoring Projections: `Scorable` Interface + Source Routing
+**Time:** ~3h
+
+**What I built / changed**
+- `Scorable` interface (`extends StatLine`, adds `getPlayerId()`) — the polymorphic contract that lets one scoring loop handle either source
+- `PlayerStats`: `StatLine` → `Scorable`. `PlayerProjection`: added `Scorable`, and dropped the now-unused `@ManyToOne player` association (DB FK retained) to silence an `HHH000502` warning
+- `PlayerProjectionRepository.findDistinctYears()` (JPQL)
+- `PlayerScoringService` refactor: injects `PlayerProjectionRepository` + `@Value` current-season; `computeAndSaveForSeason` routes by the configured boundary; private `scoreAndSave(List<? extends Scorable>, …)` holds the generalized per-row × 6-format loop; `recomputeAllSeasons` unions distinct years from both tables
+- `application.properties`: `readoption.current-season=2026`
+- Projection sync re-adds the `computeAndSaveForSeason(season)` trigger
+- Validated 2026 scoring against rotowire's `pts_*`
+- **Follow-up cleanups (post-validation):** set the `ScoringService` interception value to −2 (the league rule) and ran `recomputeAllSeasons`; backported `@JsonIgnore` on `isNew()` + `getId()` to `PlayerStats` (kills the `"new": true` leak); dropped the unused `@ManyToOne player` from `PlayerStats` (DB FK retained)
+
+**Design decisions & lessons**
+
+1. **`Scorable` — Interface Segregation in practice.** `StatLine` stays the pure scoring contract (what `calculate()` and the unit tests need, no identity). `Scorable extends StatLine` adds the one thing the persistence loop needs — `getPlayerId()`. Both entities implement it, so the loop is written once over `List<? extends Scorable>`; `calculate(StatLine)` is unchanged.
+   - **Interview line:** *"I segregated the interfaces by consumer: `StatLine` is what the scoring formula needs — pure stats, trivially stubbed in unit tests. `Scorable` extends it with the player id, which only the persistence layer needs. Same data, two contracts, each minimal for its caller."*
+
+2. **Source routing: config-driven, not data-presence (learned the hard way).** First attempt routed by data presence — "if `player_stats` has the year, score stats, else projections." It scored every 2026 player to **0.00**. Cause: I'd synced 2026 *stats* earlier, and Sleeper returns zero-stat rows for a season that hasn't been played — present but empty. Switched to a configured boundary: `season < currentSeason` → stats, else projections. Deterministic, immune to empty rows, and can't be fooled by an accidental future-season stats sync.
+   - **Interview line:** *"I route scoring by an explicit current-season boundary, not by inferring it from data presence. A provider can return rows for a season that hasn't happened — present but empty — so 'the table has rows for this year' doesn't mean the year was played. A configured boundary is deterministic; inference from data shape isn't."*
+
+3. **The cross-check as a regression oracle — and the bug it caught.** Saquon (no INT) matched rotowire to the cent: 208.50 / 226.00 / 243.50 = `pts_std` / `pts_half_ppr` / `pts_ppr`, validating the full rushing/receiving/PPR/2pt/fumble path through projections. Mahomes exposed a real bug: he scored 278.62, which backs out to **−1 per interception** — but my league rule is **−2**. The `ScoringService` constant didn't match the intended rule. Fixed the constant to −2 and ran `recomputeAllSeasons`; Mahomes is now 267.62 (4PT) / 323.62 (6PT), sitting exactly the interception count (11 pts) below rotowire's −1 numbers — the intended convention difference. Saquon, with no interceptions, matched both before and after, which is precisely what let me isolate the discrepancy to the INT term.
+   - **Interview line:** *"I treat a provider's precomputed points as a regression oracle. When my engine diverges, it's either a convention difference I can name to the decimal or a bug — here it surfaced that my interception value wasn't what I believed. The cross-check caught the gap between intent and implementation."*
+
+4. **`HHH000502` and the read-only association.** On the re-sync UPDATE path, Spring Data `merge()` saw `PlayerProjection.player` (the read-only `@ManyToOne`) as "modified" to null and warned it wouldn't write it. Benign — `player_id` is owned by the raw `@Id` and untouched — but noisy on every re-sync. Dropped the unused association (never navigated); the V5 database FK still enforces integrity. Dropping the JPA mapping is not dropping the constraint.
+
+5. **Operational rule:** don't sync stats for an unplayed season. Stats sync is for completed seasons; the upcoming season lives in projections. Routing now protects scoring from the mistake, but the junk rows still shouldn't exist (cleaned 2026 out of `player_stats`).
+
+6. **Transaction joining:** the projection sync's call to `computeAndSaveForSeason` is a cross-bean call through the proxy, so with default `REQUIRED` propagation it joins the sync's transaction — projections and their scoring commit or roll back together.
+
+7. **Decoupling win:** after the refactor `PlayerScoringService` no longer imports the concrete `PlayerStats`/`PlayerProjection` types — it works entirely through `Scorable` and the two repositories.
+
+### Project structure (updated)
+```
+read-option/src/main/java/app/readoption/
+├── scoring/
+│   └── Scorable.java                    ← NEW (extends StatLine, adds getPlayerId)
+├── playerstats/PlayerStats.java         ← now implements Scorable
+├── playerprojection/
+│   ├── PlayerProjection.java            ← implements Scorable; dropped @ManyToOne player
+│   └── PlayerProjectionRepository.java  ← + findDistinctYears()
+└── playerscoring/
+    └── PlayerScoringService.java        ← config-driven routing, scoreAndSave(List<? extends Scorable>), union recompute
+```
+
+---
+
 ### Week 3 Status
 - [x] Day 1 — Project setup, Docker Compose, Flyway V1, Player entity + repository
 - [x] Day 2 — Sleeper API integration, PlayerSyncService, ETL pipeline (3,217 players)
@@ -1117,7 +1164,7 @@ read-option/
 ### Week 4 Status
 - [x] Day 1 — `player_scoring` table (Flyway V4), entity with Lombok, scoring pipeline wired into stats sync, recompute endpoint, Lombok refactor across all entities
 - [x] Day 2 — `player_projections` table (Flyway V5), projection DTOs, `fetchProjections`, sync pipeline, controller; loaded 2026 rotowire projections
-- [ ] Day 3 — Score projections through ScoringService, store results
+- [x] Day 3 — `Scorable` interface, config-driven source routing, projection scoring validated against rotowire `pts_*`
 - [ ] Day 4 — Query endpoints: top N by projected points, player detail with historical trend + projection
 
 ---
@@ -1853,6 +1900,11 @@ spring-ai-playground/
 - Provider scoring conventions differ; the engine encodes the league's rules, not the provider's
 - Parameterized `ScoringRules` value object as the scalable path for arbitrary formats (Phase 3) — the enum graduates into a registry of presets, position passed into scoring for TE premium
 - Not auto-triggering scoring across data sources: scoring routes by source (projections vs actuals), so the stats-sync trigger doesn't transfer to the projection sync
+- `Scorable extends StatLine` (Interface Segregation): `StatLine` stays pure for the formula and unit tests; `Scorable` adds player identity for the persistence loop — one scoring loop over `List<? extends Scorable>`
+- Config-driven routing over data-presence: a provider returns zero-stat rows for an unplayed season (present but empty), so an explicit current-season boundary beats inferring source from data shape
+- Provider points as a regression oracle: the cross-check caught a real bug — the engine was scoring −1 per INT while the league rule is −2; fixed the constant and recomputed, after which QB scoring intentionally diverges from rotowire's −1 numbers by the interception count, while non-INT lines still match to the cent
+- HHH000502 on re-sync: `merge()` sees a read-only `@ManyToOne` set to null and warns; dropping the unused association silences it while the database FK still enforces integrity (dropping the mapping ≠ dropping the constraint)
+- `@Transactional` REQUIRED propagation: the sync's cross-bean call to scoring joins the sync's transaction — save and score commit or roll back together
 
 **Interface Design / Testing**
 - Extracted interface pattern: designing `StatLine` from existing `PlayerStats` getters

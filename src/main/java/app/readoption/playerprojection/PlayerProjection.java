@@ -1,6 +1,7 @@
 package app.readoption.playerprojection;
 
 import app.readoption.player.Player;
+import app.readoption.scoring.Scorable;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.*;
@@ -18,7 +19,7 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-public class PlayerProjection implements Persistable<PlayerProjectionId> {
+public class PlayerProjection implements Persistable<PlayerProjectionId>, Scorable {
 
     @Id
     @Column(name = "player_id")
@@ -26,11 +27,6 @@ public class PlayerProjection implements Persistable<PlayerProjectionId> {
 
     @Id
     private int year;
-
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "player_id", insertable = false, updatable = false)
-    @JsonIgnore
-    private Player player;
 
     private String source;
     private String team;
