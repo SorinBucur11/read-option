@@ -335,6 +335,17 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | **Computed/derived table** | Database table populated entirely by application logic (e.g., scoring results). Can be fully recomputed. FKs often unnecessary — application guarantees integrity. |
 | **Leftmost prefix rule** | A composite index on (A, B, C) supports queries on A, A+B, or A+B+C. Queries on B or C alone can't use it. Determines whether a separate index is needed. |
 | **show-sql vs SLF4J logging** | `show-sql=true` bypasses the logging framework (no timestamps, no levels). Production: use `logging.level.org.hibernate.SQL=DEBUG` for controllable SQL logging. |
+| **Page vs Slice** | `Page` adds a COUNT query for total elements/pages; `Slice` over-fetches one row to know if a next page exists, no count. `Page` for "3 of 13", `Slice` for infinite scroll. |
+| **PagedModel / VIA_DTO** | Spring Data 3.3 stable paged envelope. `@EnableSpringDataWebSupport(pageSerializationMode = VIA_DTO)` wraps `PageImpl` so the JSON contract doesn't leak Spring internals. Returning `Page` raw warns since 3.1. |
+| **JPQL constructor expression** | `SELECT new <FQN>(...)` projects rows straight into a DTO constructor — no entity hydration, no lazy proxies. Records are ideal targets. |
+| **Hibernate 6 entity join** | `JOIN Other o ON o.id = e.fkId` between entities with no mapped association. Impossible pre-Hibernate-6 (native SQL only). Lets computed tables stay FK/association-free yet joinable in HQL. |
+| **`@Enumerated(EnumType.STRING)`** | Persist an enum as its name (stable, readable). Never `ORDINAL` (stores declaration index → reordering corrupts rows). STRING maps to the existing varchar, so no migration when the column already held names. |
+| **`@ResponseStatus`** | On a custom exception, maps it to an HTTP status automatically (e.g. NOT_FOUND → 404). Lightweight; graduate to `@ControllerAdvice` for structured error bodies. |
+| **`@Transactional(readOnly = true)`** | Read-path optimization — Hibernate skips dirty-checking/flush, reads share one snapshot. Signals intent. |
+| **Null-or-match filter** | `AND (:p IS NULL OR col = :p)` — one query handles filtered and unfiltered. Mirror in the count query (and any join it needs). Multiply filters → Criteria/Specifications. |
+| **Searched CASE (HQL)** | `CASE WHEN :x = 'A' THEN col1 ... END` picks a column by parameter at query time (you can't bind a column name). Safer HQL form than simple `CASE :x WHEN`. |
+| **Positional rank (derived)** | "QB8" = count of same-position players with a better ADP, +1. A function of (position, ADP) — computed on read, never stored. Single-player = count; everyone-at-once = `RANK() OVER (PARTITION BY ...)`. |
+| **Null trap in count-ranking** | `col < :null` is *unknown*, so a null-value row counts 0 better → ranks #1. Guard at the service: no value ⇒ null rank. |
 
 ### Fantasy Football Domain
 
@@ -387,6 +398,13 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | Projections table + ADP capture | ✅ Done (Week 4 Day 2) — player_projections, FK to player, per-format ADP, source provenance |
 | Parameterized scoring rules (ScoringRules) | Phase 3 (TE premium, arbitrary user formats) |
 | Scoring source-routing (projections vs actuals) | ✅ Done (Week 4 Day 3) — config-driven (current-season boundary) |
+| Pagination (Page/Slice, PagedModel/VIA_DTO) | ✅ Done (Week 4 Day 4) — leaderboard |
+| Composite/assembled DTOs | ✅ Done (Week 4 Day 4) — player profile |
+| JPQL constructor expressions | ✅ Done (Week 4 Day 4) — leaderboard rows |
+| Hibernate 6 ad-hoc entity joins | ✅ Done (Week 4 Day 4) — scoring⋈player |
+| `@Enumerated(EnumType.STRING)` | ✅ Done (Week 4 Day 4) — scoringFormat field |
+| Positional rank (derived, CASE count) | ✅ Done (Week 4 Day 4) — "QB8" in profile |
+| Window functions (`RANK() OVER`) | Phase 4 — leaderboard market-rank overlay |
 
 ---
 
@@ -1155,6 +1173,133 @@ read-option/src/main/java/app/readoption/
 
 ---
 
+### Week 4 Day 4 — Query/Read Endpoints: Pagination, Composite DTOs, Position Filter + Positional Rank
+**Time:** ~4h
+
+**What I built**
+- Two read endpoints over the scored data — a paginated **leaderboard** and a composite **player profile**. These are the queryable face of all the scoring/projection work. The primary *future* consumer is the Phase 4 LLM agent (RAG / tool-calling fuel), not a UI; the consumer *now* is me/curl/tests.
+- `SpringDataWebConfig` — `@EnableSpringDataWebSupport(pageSerializationMode = VIA_DTO)`
+- DTO records: `LeaderboardRow` (flat, from a join); `PlayerProfile` + `SeasonScore` + `ProjectionScore` (hierarchical composite)
+- `AdpBucket` enum + `ScoringFormat.adpBucket()` + `PlayerProjection.adp(AdpBucket)` — format→ADP-column mapping
+- Leaderboard `@Query`: JPQL constructor expression over a Hibernate-6 ad-hoc entity join, explicit `countQuery`, fixed `ORDER BY total_points DESC`, optional position filter (null-or-match guard), `MAX_PAGE_SIZE` clamp
+- `PlayerProfileService` — service-assembled composite, `@Transactional(readOnly = true)`
+- `PlayerNotFoundException` (`@ResponseStatus(NOT_FOUND)`)
+- **Migrated `PlayerScoring.scoringFormat` from `String` to `ScoringFormat` enum** via `@Enumerated(EnumType.STRING)` — no data migration
+- **Positional rank ("QB8")** — derived count query with a searched `CASE` picking the ADP column by format bucket
+
+**API shape**
+- `GET /api/scoring/leaderboard?season=2026&format=STANDARD_6PT&position=RB&page=0&size=25` — season/format default via config, position optional
+- `GET /api/players/{id}/profile?format=STANDARD_6PT` — history (past seasons) + current projection + positional rank
+
+**Frontend decision (settled this session)**
+- No frontend now, probably not until after Phase 4, possibly never as a dashboard. The product is conversational — its natural UI is a chat box, not a data grid. The CV differentiator is the Phase 4 AI agent, not React.
+- When/if built: Claude builds it (Claude Code or a throwaway artifact); I stay at read-and-tweak comprehension. **Own what I'm selling (backend + AI integration), delegate adjacent scaffolding (frontend).**
+- **Interview line:** *"I used AI coding tools to scaffold the frontend so I could concentrate my own engineering on the data pipeline and the LLM integration — the parts that are the actual product. Deciding what to build by hand versus delegate to AI tooling is part of how I work now."*
+
+**Who consumes these endpoints (the reframe that made pagination make sense)**
+- A REST endpoint is a **published contract** consumed by whatever calls it — another service, a test, or an LLM tool call. It doesn't know or care who calls it (same decoupling as a Camel route or a DB view). Building the API before any UI is normal — the API *is* the product surface.
+- Consumers, in order: (1) me/curl/tests now (sanity-check the scoring — Mahomes should top the QB board), (2) the Phase 4 agent (leaderboard = "top available players", profile = grounded context for a specific pick), (3) a thin UI eventually.
+- Pagination's real justification here isn't "page 3 of 13 UI" — it's **bounded reads**, the Phase 0 *context bomb* lesson at the API layer. You don't dump 300 players into a prompt; you take top N. The `MAX_PAGE_SIZE` clamp is that lesson made concrete. Mentally it's the same as Oracle `OFFSET n ROWS FETCH NEXT m`.
+
+**Pagination**
+- `Page<T>` = content + total count + total pages (runs a second COUNT query). `Slice<T>` = content + "is there a next page?" (no count, over-fetches one row). `Page` for "3 of 13", `Slice` for infinite scroll.
+- **Don't return `Page` raw from a controller.** Since Spring Data 3.1 it logs a warning — `PageImpl` is an internal type with no JSON-stability guarantee. Spring Data 3.3 (Boot 3.5 ships it) added a non-HATEOAS `PagedModel`; opt in with `VIA_DTO` and every `Page<T>` serializes as a stable `{ content, page: { size, number, totalElements, totalPages } }` envelope. Same principle as versioned service contracts / ActiveMQ schemas — don't leak an internal type into a published contract.
+- **Bake the sort, don't expose `Sort`.** A leaderboard has one correct order (points desc) — `ORDER BY` in the query, only `page`/`size` from the client. Arbitrary `Sort` lets a client request a non-existent property (500) or sort an unindexed column.
+- **Interview line:** *"Returning a `Page` straight from a controller has been discouraged since Spring Data 3.1 because `PageImpl` is an internal type with no JSON-stability guarantee. Spring Data 3.3 added a non-HATEOAS `PagedModel`; I enable it via `@EnableSpringDataWebSupport(pageSerializationMode = VIA_DTO)`, or map to my own response record when I want to own the contract outright."*
+
+**The two-query contrast (the core lesson of the day)**
+- **Leaderboard** = constructor-expression projection over a join, hundreds of rows across two tables → don't hydrate entities.
+- **Profile history** = derived query returning entities, one player's ≤6 rows from a single table with no associations → loading entities and mapping in Java is cleaner. Don't over-apply constructor expressions when N is tiny.
+- **Hibernate 6 ad-hoc entity join:** `JOIN Player p ON p.id = s.playerId` between entities with **no mapped association** — impossible in older Hibernate (native SQL only). Lets `player_scoring` stay FK-free and association-free yet joinable in HQL.
+- **JPQL constructor expression:** `SELECT new <FQN>(...)` projects rows straight into a DTO constructor — no entity hydration, no lazy proxies. Records are ideal targets.
+- **Count-query gotcha:** a `@Query` with a projection + join can't auto-derive its count, so supply an explicit `countQuery` — the cheapest statement returning the same total. A filter on a joined table forces the join into the count query too, or `totalElements` desyncs from the content.
+- **Interview line (entity join):** *"Hibernate 6 supports ad-hoc entity joins between entities with no mapped association. Before that, joining unmapped entities in JPQL was impossible — you dropped to native SQL. It's what lets me keep computed tables FK-free and association-free while still joining them in HQL when a read needs it."*
+- **Interview line (constructor expression):** *"A JPQL constructor expression projects query results directly into a DTO constructor, skipping entity hydration and the persistence context — faster and immune to lazy-proxy serialization. Records are ideal targets because their canonical constructor matches the projection."*
+- **Interview line (count query):** *"For a `@Query` with a projection and a join, Spring Data can't derive the count, so I supply an explicit `countQuery` — and a filter on a joined table has to appear in the count query too, or the filtered content and the total come from different row sets."*
+
+**Composite DTO (profile) — three approaches weighed**
+- Interface projection: flat subset of ONE query → wrong for a nested multi-source response.
+- Constructor expression: great per flat row, but one query can't build a parent-with-collection.
+- **Service-assembled record DTO (chosen):** fetch the parts, split history vs projection **by year**, select the ADP column by format, assemble. Explicit, flexible, testable.
+- The year-split (`year < currentSeason` = history, `== currentSeason` = projection) is **free because Day 1 refused a source column and let the year discriminate** — that decision paid rent here.
+- **Interview line:** *"Interface projections are for a flat slice of a single query. The moment a response aggregates multiple sources into a nested shape, that's a service-assembled DTO — I still use constructor-expression queries to pull flat rows so no entity leaks into the read path, but the composition is plain Java in the service where it's explicit and testable."*
+
+**What DTOs are *for* here (consolidated)**
+- The response shape doesn't match any single entity (leaderboard joins two tables; profile spans three + many rows) — the DTO *is* that shape.
+- Keeps internal junk out of JSON (`Persistable.isNew`/`getId`, audit timestamps, lazy proxies) — the `@JsonIgnore` band-aids were a *symptom* of returning entities; DTOs are the *cure*.
+- Decouples the API contract from the schema — returning entities makes JSON a mirror of the tables, so any column change breaks consumers (same instinct as an ActiveMQ message schema vs the raw row). A DTO is roughly a SQL view shaped for one consumer, except it can carry logic a view can't.
+- Don't cargo-cult: a DTO isn't mandatory when the response genuinely *is* one entity. The trigger is **divergence** — multiple sources, aggregated rows, or fields to hide.
+- **Interview line:** *"A DTO decouples the API contract from the database schema. Returning entities makes the JSON a mirror of the tables, so any schema change breaks consumers and internal fields leak onto the wire. I introduce one the moment a response diverges from a single entity — almost always for reads that join or aggregate."*
+
+**`String` → enum migration on a composite-key field (Option B)**
+- Leaderboard first failed: `Could not convert ScoringFormat to String` — `PlayerScoring.scoringFormat` was a `String` field; I'd bound an enum param to a String path. JPQL is parsed at runtime, so the compiler couldn't catch it ("structural success ≠ semantic correctness" one layer down).
+- Two fixes: (A) keep the field `String`, pass `.name()` at the repo boundary; (B) map it `@Enumerated(EnumType.STRING)` end to end. Chose **B** for type safety.
+- **No data migration / no schema change:** the column already stored the enum names as text, so `EnumType.STRING` maps onto the exact same varchar values — Java type changes, data doesn't, `ddl-auto=validate` still passes.
+- IdClass field type must match the entity `@Id` type, so `PlayerScoringId.scoringFormat` became the enum too. Enum `equals`/`hashCode` is identity-based and correct for a key. Write path: `.scoringFormat(format)` instead of `.scoringFormat(format.name())`.
+- **Never `EnumType.ORDINAL`** — it stores the declaration index, so reordering/inserting an enum constant silently remaps every existing row.
+- **Interview line:** *"`@Enumerated(EnumType.STRING)` persists the enum's name — stable and readable. `ORDINAL` stores the declaration index, so reordering a constant silently corrupts existing rows; I never use it. Because the column already held the names as text, switching to STRING needed no migration. I avoid retyping an enum field that's part of a composite key unless the payoff is worth it, since that's the machinery the upsert and equals/hashCode rely on."*
+
+**Optional filter (position)**
+- Null-or-match guard in a single query: `AND (:position IS NULL OR p.position = :position)` — inert when null, filters when present. Avoids duplicate methods. Once filters multiply → JPA Criteria/Specifications.
+- Param is `String` (column is `String`) but taken as the `Position` enum at the controller (free 400 on garbage) then `.name()`-bridged — enum at the boundary, string at the column, same seam as the scoringFormat fix.
+- `required = false`, **no `defaultValue`** — "all positions" is the *absence* of the filter (null), not a value (contrast with season/format which have natural defaults).
+- The guard must be in the count query too (and so must the `Player` join it depends on).
+- **Interview line:** *"Optional filters I express as a null-or-match guard in a single query rather than overloaded methods, and I mirror the guard — and any join it needs — in the count query so pagination totals stay correct. Once filters multiply I switch to Criteria/Specifications."*
+
+**Positional rank ("QB8") — derived, not stored**
+- "QB8" = how many same-position players have a better ADP, plus one. A **pure function of (position, overall ADP)** — derived on read, never a stored column (same "don't persist what you can recompute" as the scoring table / year-discriminator).
+- Distinguished integer **positional rank** (QB8, derivable) from a decimal **measured positional ADP** (8.3, a separate market feed I don't have and don't need). Built the rank; skipped the decimal. Fits the division of labor: Sleeper gives raw overall ADP, Java computes the positional view.
+- Implementation: a count `@Query` joining `Player`, with a **searched `CASE`** picking the ADP column by format bucket (`WHEN :bucket = 'STANDARD' THEN pr.adpStd ...`) — can't pick a column by parameter in JPQL, and the searched form is the safer HQL shape. `rank = count(better ADP) + 1`.
+- **The null trap (real correctness bug avoided):** a player with no ADP compares as *unknown* against everyone, so the naive count is 0 → rank 1 → every undrafted player looks like the consensus #1 at his position. Guarded at the service: no ADP ⇒ null rank, don't even run the query. The sentinel-null also handles itself in the count: `null < :playerAdp` is unknown, so undrafted players are excluded without an explicit `IS NOT NULL`.
+- **Forward hook (Phase 4):** compute the rank twice — once over market ADP, once over my engine's projected points. The **gap between market rank and value rank is the draft edge** the LLM reasons about. A single-player rank is a count; ranking *everyone at once* (leaderboard overlay) is the window-function (`RANK() OVER (PARTITION BY position ORDER BY ...)`) job.
+- **Interview line (derived):** *"Positional rank is derived, not stored — a ranking over ADP partitioned by position, recomputed on read. And I'd compute it twice: over market ADP and over my own projected value. The divergence between a player's market rank and value rank is the signal the draft assistant reasons about."*
+- **Interview line (count vs window):** *"For one player's rank I count how many same-position players have a better ADP — a single indexed count, not a full `RANK()` window over the whole position. The window function is for when I need every player's rank at once, like a leaderboard overlay."*
+- **Interview line (null trap):** *"Ranking by 'count of better values plus one' has a null trap: a player with no value compares as unknown against everyone, so the naive count is zero and he ranks first. I guard it at the service — no value means no rank, returned as null — rather than letting a missing value masquerade as the best."*
+
+**Controller-vs-service layering**
+- Leaderboard goes controller → repository directly: one query, no assembly, a service would only delegate. Profile gets a service: real logic (assembly, year-split, ADP bucket, rank). Introduce a layer when it holds something.
+- Default for an optional param lives at the **controller** via `${readoption.current-season}` placeholder in `defaultValue` (resolved like `@Value`, then converted to int); the service takes an explicit non-null value. Same property feeds two consumers in two layers (controller default vs business routing) — not duplication.
+- **Interview line:** *"A default for an optional request param is an API concern, so it lives at the controller and binds to a config property via a placeholder in `defaultValue`. The service takes the resolved value explicitly and never invents one, so it stays deterministic and unit-testable."*
+
+**Production items deferred (noted for later)**
+- `@Min/@Max` validation on `page`/`size` (negative page → 500 from `PageRequest.of`)
+- `@ControllerAdvice` for a consistent JSON error body across 404/400
+- Active-player filter for historical leaderboards
+- Leaderboard market-rank overlay via window function
+
+**Validation**
+- Leaderboard top sane (elite QBs top STANDARD_6PT). `position=RB`/`WR` give correct boards, `totalElements` drops vs unfiltered. Bad `position`/`format` → 400, bad player id → 404.
+- Profile: Mahomes (4046) history + 2026 projection + plausible single-digit QB positional rank.
+- VIA_DTO envelope confirmed (`page` block present; no `PlainPageSerializationWarning`).
+
+### Project structure (updated)
+```
+read-option/src/main/java/app/readoption/
+├── config/
+│   └── SpringDataWebConfig.java             ← NEW (@EnableSpringDataWebSupport VIA_DTO)
+├── player/
+│   ├── PlayerController.java                ← + GET /{id}/profile
+│   ├── PlayerProfileService.java            ← NEW (composite assembler, readOnly tx)
+│   ├── PlayerProfile.java                   ← NEW (composite DTO)
+│   ├── SeasonScore.java                     ← NEW (history row DTO)
+│   ├── ProjectionScore.java                 ← NEW (projection DTO + positionalRank)
+│   └── PlayerNotFoundException.java         ← NEW (@ResponseStatus 404)
+├── playerscoring/
+│   ├── PlayerScoring.java                   ← scoringFormat now @Enumerated(EnumType.STRING)
+│   ├── PlayerScoringId.java                 ← scoringFormat now ScoringFormat
+│   ├── PlayerScoringRepository.java         ← + findLeaderboard (constructor expr + countQuery + position guard), findByPlayerIdAndScoringFormatOrderByYearAsc
+│   ├── PlayerScoringController.java         ← + GET /leaderboard
+│   └── LeaderboardRow.java                  ← NEW (flat join DTO)
+├── playerprojection/
+│   ├── PlayerProjection.java                ← + adp(AdpBucket)
+│   └── PlayerProjectionRepository.java      ← + findByPlayerIdAndYear, countBetterAdpAtPosition (CASE)
+└── scoring/
+    ├── ScoringFormat.java                   ← + adpBucket()
+    └── AdpBucket.java                       ← NEW (STANDARD/HALF_PPR/PPR)
+```
+
+---
+
 ### Week 3 Status
 - [x] Day 1 — Project setup, Docker Compose, Flyway V1, Player entity + repository
 - [x] Day 2 — Sleeper API integration, PlayerSyncService, ETL pipeline (3,217 players)
@@ -1165,7 +1310,7 @@ read-option/src/main/java/app/readoption/
 - [x] Day 1 — `player_scoring` table (Flyway V4), entity with Lombok, scoring pipeline wired into stats sync, recompute endpoint, Lombok refactor across all entities
 - [x] Day 2 — `player_projections` table (Flyway V5), projection DTOs, `fetchProjections`, sync pipeline, controller; loaded 2026 rotowire projections
 - [x] Day 3 — `Scorable` interface, config-driven source routing, projection scoring validated against rotowire `pts_*`
-- [ ] Day 4 — Query endpoints: top N by projected points, player detail with historical trend + projection
+- [x] Day 4 — Query/read endpoints: leaderboard (pagination + VIA_DTO + position filter), player profile (composite DTO: history + projection + positional rank), `String`→enum migration on `scoringFormat`
 
 ---
 
@@ -1921,3 +2066,21 @@ spring-ai-playground/
 - @Builder.Default preserves field initializers — without it, builder ignores `= true` and uses type default
 - IntelliJ requires annotation processing enabled + Lombok plugin
 - Static factory method vs @Builder: factory methods have names, support multiple creation paths; @Builder is for many-field construction
+
+**Pagination / Read APIs (Week 4 Day 4)**
+- A REST endpoint is a published contract consumed by anything — service, test, or LLM tool call; it doesn't know its caller (same decoupling as a Camel route or DB view), so building the API before any UI is normal
+- Pagination is bounded reads — the context-bomb lesson at the API layer; `MAX_PAGE_SIZE` clamp protects payload, memory, and (since an LLM is a downstream consumer) context cost
+- `Page` vs `Slice` — count query vs over-fetch-one; "3 of 13" vs infinite scroll
+- Don't return `Page` raw — `PageImpl` is internal with no JSON-stability guarantee; `@EnableSpringDataWebSupport(pageSerializationMode = VIA_DTO)` gives a stable `PagedModel` envelope (warning since Spring Data 3.1, fix in 3.3)
+- Bake the sort into a leaderboard query; don't expose arbitrary `Sort` (non-existent property = 500, unindexed sort)
+- Hibernate 6 ad-hoc entity joins (`JOIN X ON ...`) between unmapped entities — keeps computed tables FK/association-free yet joinable in HQL
+- JPQL constructor expressions project straight into DTOs — no hydration, no lazy proxies; records as targets
+- Explicit `countQuery` for projection+join queries; a filter on a joined table forces the join into the count query, or totals desync
+- Composite/assembled DTOs in a service when the response spans multiple sources/rows; interface projections only for a flat single-query slice; the year discriminator splits history from projection for free (Day 1 paying rent)
+- DTOs decouple the API contract from the schema and keep internal fields (`isNew`/`getId`, audit cols, lazy proxies) off the wire — `@JsonIgnore` was the symptom, DTOs the cure; trigger is divergence from a single entity
+- Default for an optional param at the controller via `${prop}` placeholder in `defaultValue`; service stays explicit; same config property can feed a controller default and business routing without being duplication
+- Controller→repository for a single read; introduce a service only when it holds logic
+- `@Enumerated(EnumType.STRING)` over `ORDINAL`; migrating a `String` column to an enum needs no data change when it already stored names; retyping a composite-key field touches the IdClass too (the upsert/equals/hashCode machinery)
+- Optional filter via null-or-match guard → Criteria/Specifications when filters multiply; enum at the boundary (free 400), string at the column
+- `@ResponseStatus` maps a custom exception to a status (404); `@ControllerAdvice` is the upgrade for structured error bodies
+- Positional rank is derived (count of better ADP + 1), not stored; the null-value-ranks-#1 trap (guarded at the service); searched `CASE` picks the per-format ADP column; market-rank vs value-rank gap is the Phase 4 draft signal; window function for ranking everyone at once

@@ -1,5 +1,6 @@
 package app.readoption.playerscoring;
 
+import app.readoption.scoring.ScoringFormat;
 import lombok.AllArgsConstructor;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -15,5 +16,5 @@ public class PlayerScoringId implements Serializable {
 
     private String playerId;
     private int year;
-    private String scoringFormat;
+    private ScoringFormat scoringFormat;
 }

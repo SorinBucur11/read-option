@@ -40,4 +40,12 @@ public enum ScoringFormat {
     public int getPassingTdPoints() {
         return passingTdPoints;
     }
+
+    public AdpBucket adpBucket() {
+        return switch (this) {
+            case STANDARD_4PT, STANDARD_6PT -> AdpBucket.STANDARD;
+            case HALF_PPR_4PT, HALF_PPR_6PT -> AdpBucket.HALF_PPR;
+            case PPR_4PT, PPR_6PT -> AdpBucket.PPR;
+        };
+    }
 }

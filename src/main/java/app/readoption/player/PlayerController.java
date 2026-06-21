@@ -1,5 +1,6 @@
 package app.readoption.player;
 
+import app.readoption.scoring.ScoringFormat;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -10,10 +11,14 @@ public class PlayerController {
 
     private final PlayerSyncService syncService;
     private final PlayerRepository playerRepository;
+    private final PlayerProfileService playerProfileService;
 
-    public PlayerController(PlayerSyncService syncService, PlayerRepository playerRepository) {
+    public PlayerController(PlayerSyncService syncService,
+                            PlayerRepository playerRepository,
+                            PlayerProfileService playerProfileService) {
         this.syncService = syncService;
         this.playerRepository = playerRepository;
+        this.playerProfileService = playerProfileService;
     }
 
     @PostMapping("/sync")
@@ -30,5 +35,12 @@ public class PlayerController {
     @GetMapping("/position/{position}")
     public List<Player> getByPosition(@PathVariable String position) {
         return playerRepository.findByPosition(position);
+    }
+
+    @GetMapping("/{id}/profile")
+    public PlayerProfile profile(
+            @PathVariable String id,
+            @RequestParam(defaultValue = "STANDARD_6PT") ScoringFormat format) {
+        return playerProfileService.getProfile(id, format);
     }
 }

@@ -1,5 +1,6 @@
 package app.readoption.playerscoring;
 
+import app.readoption.scoring.ScoringFormat;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.*;
@@ -26,8 +27,8 @@ public class PlayerScoring implements Persistable<PlayerScoringId> {
     private int year;
 
     @Id
-    @Column(name = "scoring_format")
-    private String scoringFormat;
+    @Enumerated(EnumType.STRING)
+    private ScoringFormat scoringFormat;
 
     @Column(name = "total_points", nullable = false)
     private BigDecimal totalPoints;

@@ -1,6 +1,7 @@
 package app.readoption.playerprojection;
 
 import app.readoption.player.Player;
+import app.readoption.scoring.AdpBucket;
 import app.readoption.scoring.Scorable;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
@@ -83,5 +84,13 @@ public class PlayerProjection implements Persistable<PlayerProjectionId>, Scorab
     @PreUpdate
     protected void onUpdate() {
         this.updatedAt = LocalDateTime.now();
+    }
+
+    public BigDecimal adp(AdpBucket bucket) {
+        return switch (bucket) {
+            case STANDARD -> adpStd;
+            case HALF_PPR -> adpHalfPpr;
+            case PPR      -> adpPpr;
+        };
     }
 }

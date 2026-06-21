@@ -100,7 +100,7 @@ public class PlayerScoringService {
                 PlayerScoring scoring = PlayerScoring.builder()
                         .playerId(line.getPlayerId())
                         .year(season)
-                        .scoringFormat(format.name())
+                        .scoringFormat(format)
                         .totalPoints(result.totalPoints())
                         .pointsPerGame(result.pointsPerGame())
                         .gamesPlayed(line.getGamesPlayed() != null ? line.getGamesPlayed() : 0)
