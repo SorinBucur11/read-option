@@ -346,6 +346,19 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | **Searched CASE (HQL)** | `CASE WHEN :x = 'A' THEN col1 ... END` picks a column by parameter at query time (you can't bind a column name). Safer HQL form than simple `CASE :x WHEN`. |
 | **Positional rank (derived)** | "QB8" = count of same-position players with a better ADP, +1. A function of (position, ADP) — computed on read, never stored. Single-player = count; everyone-at-once = `RANK() OVER (PARTITION BY ...)`. |
 | **Null trap in count-ranking** | `col < :null` is *unknown*, so a null-value row counts 0 better → ranks #1. Guard at the service: no value ⇒ null rank. |
+| **Test slice** | A focused Boot test context loading only one layer (`@WebMvcTest`, `@DataJpaTest`, `@JsonTest`…) instead of the whole app — faster, failures point at one layer. |
+| **`@WebMvcTest`** | Slice loading only the web layer for given controllers (MVC infra, Jackson) — no services/repos/DB. Collaborators supplied as `@MockitoBean`. |
+| **`@DataJpaTest`** | Slice loading only JPA (entities, repositories, datasource). Transactional + rolled back per test. Defaults to in-memory H2 — disable with `@AutoConfigureTestDatabase(replace = NONE)`. |
+| **`@MockitoBean`** | Replaces a context bean with a Mockito mock. Spring Framework 6.2 replacement for the deprecated (Boot 3.4) `@MockBean`. |
+| **`MockMvc`** | Drives the real DispatcherServlet/binding/Jackson without a running server; assert status, headers, JSON (`jsonPath`). |
+| **`ArgumentCaptor`** | Captures the argument a mock was actually called with, to assert on what crossed a boundary (e.g. the clamped `Pageable`). Behavior, not state. |
+| **`verify(mock, never())`** | Asserts an interaction did *not* happen — proves a guard short-circuited before calling a collaborator. |
+| **Testcontainers** | Spins real services (Postgres) in Docker for tests. `@ServiceConnection` auto-wires Spring's datasource to the container. |
+| **`@ServiceConnection`** | Boot 3.1+ — reads a container's host/port/credentials and configures the matching Spring connection automatically; replaces `@DynamicPropertySource` boilerplate. |
+| **Singleton container** | A `static` container started once for the whole test run (vs `@Container` per-class), reused by every test via a shared base class. |
+| **`@AutoConfigureTestDatabase(replace = NONE)`** | Stops `@DataJpaTest` swapping the datasource for embedded H2, so the slice uses the real (Testcontainers) database. |
+| **Strict stubs (Mockito)** | `MockitoExtension` default: an unused stub fails the test; forces each test to stub only its real call path. `lenient()` opts a stub out. |
+| **Fixture factory** | One place that builds valid test entities satisfying all constraints; tests bypass ingestion so they'd otherwise each re-discover NOT NULL fields. |
 
 ### Fantasy Football Domain
 
@@ -405,6 +418,10 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | `@Enumerated(EnumType.STRING)` | ✅ Done (Week 4 Day 4) — scoringFormat field |
 | Positional rank (derived, CASE count) | ✅ Done (Week 4 Day 4) — "QB8" in profile |
 | Window functions (`RANK() OVER`) | Phase 4 — leaderboard market-rank overlay |
+| Mockito service tests (no Spring) | ✅ Done (Week 4 Day 5) — profile/scoring/sync services |
+| `@WebMvcTest` controller slices | ✅ Done (Week 4 Day 5) — all four controllers |
+| `@DataJpaTest` + Testcontainers | ✅ Done (Week 4 Day 5) — repo queries on real Postgres |
+| Whole-app risk-based test suite | ✅ Done (Week 4 Day 5) — fixture factory + Claude Code delegation |
 
 ---
 
@@ -1300,6 +1317,102 @@ read-option/src/main/java/app/readoption/
 
 ---
 
+### Week 4 Day 5 — Test Suite: Slices, Mockito, Testcontainers + Whole-App Coverage
+**Time:** ~4h
+
+**What I built**
+- A risk-based test suite across the whole app, learning each test *shape* once by hand, then delegating the repetition to Claude Code under review.
+- Four test patterns now exist as exemplars: (1) plain unit (no Spring) — `ScoringServiceTest`; (2) Mockito service (no Spring) — `PlayerProfileServiceTest`, `PlayerScoringServiceTest`, both sync-service tests; (3) `@WebMvcTest` controller slice — four controller tests; (4) `@DataJpaTest` + Testcontainers (real Postgres) — three repository tests.
+- `TestFixtures` — central factory for valid test entities (player/scoring/projection/stat).
+- `AbstractPostgresTest` — singleton Testcontainers Postgres base (`@ServiceConnection`, production `pgvector/pgvector:pg16` image).
+- `ReadOptionApplicationTests.contextLoads()` smoke test (extends the Postgres base).
+
+**Testing philosophy — risk-based, not uniform**
+- Cover what can break and is costly when it does (domain logic, custom SQL, web wiring). Skip what's generated or trivial.
+- **Deliberately NOT tested:** Lombok getters/setters, record DTOs, inherited Spring Data CRUD, ID-class equals/hashCode, framework behavior — testing these tests Lombok and Spring, not my code.
+- **Interview line:** *"I don't chase a coverage percentage; I test by risk. Domain logic and custom SQL get thorough tests because that's where my bugs live and the compiler can't help. Framework-generated code — getters, record accessors, inherited repository methods — I don't test, because I'd be testing Lombok and Spring Data, not my own behavior."*
+
+**The four test shapes (each owned once, then scaled)**
+
+1. **Plain unit.** `ScoringService` tested through an anonymous `StatLine` — no Spring, no DB, milliseconds. The payoff of depending on an interface.
+
+2. **Mockito service test.** `@ExtendWith(MockitoExtension.class)` + `@Mock` repos, no Spring context. Built the service by hand in `@BeforeEach` (not `@InjectMocks`) because the constructor mixes mocks with a plain `int currentSeason`.
+   - `verify(mock, never())` is **behavior** verification, not state — the profile test proves the rank query is *never issued* when ADP is null (the null-trap guard short-circuits before the DB). State assertions check output; `verify` checks what the code *did*.
+   - **Strict stubs** (default in `MockitoExtension`): an unused stub fails the test, so each test stubs only the repos on its actual path.
+   - **Interview line:** *"Mockito's `verify(mock, never())` asserts on interactions, not return values — here I prove that with no ADP the service returns a null rank without ever issuing the ranking query. That's verifying behavior, which catches a class of bug pure output assertions miss."*
+
+3. **`@WebMvcTest` controller slice.** Loads only the web layer for one controller; every collaborator it injects must be a `@MockitoBean` or the slice won't start.
+   - **`@MockitoBean`, not `@MockBean`** — the latter is deprecated since Boot 3.4 (moved into Spring Framework 6.2 as the bean-override mechanism).
+   - **`MockMvc`** runs the real dispatcher/binding/Jackson with no server; assert status + JSON via `jsonPath`.
+   - **`ArgumentCaptor` tests my logic, not the framework's** — captured the `Pageable` the controller passed down and asserted size clamped to 100 (the context-bomb guard) when `size=500` was requested.
+   - **400 on bad enum** = param binding fails before the method runs; **404 via `@ResponseStatus`** = throwing the mapped exception yields 404 through the web layer.
+   - **`@Import(SpringDataWebConfig.class)`** pulls `VIA_DTO` into the slice so the paged envelope (`$.page`) renders — only needed for controllers returning `Page<>` (the stats/projection controllers don't, so they skip it).
+   - **Interview line (slice):** *"`@WebMvcTest` loads only the web layer for one controller and mocks its collaborators, so I test request mapping, binding, status codes, and JSON serialization in isolation. `MockMvc` drives the real dispatcher without a running server."*
+   - **Interview line (captor):** *"An `ArgumentCaptor` asserts on what the controller passed *down* to its collaborator — here, that an over-large page size was clamped before reaching the repository. It tests a transformation the controller performs without the real downstream component."*
+
+4. **`@DataJpaTest` + Testcontainers.** JPA-only slice against a real Postgres.
+   - **Singleton container** in a `static` block (not `@Container`/`@Testcontainers`, which start one per class) — boots once, every repo test reuses it.
+   - **`@ServiceConnection`** (Boot 3.1+) auto-wires the datasource to the container — no `@DynamicPropertySource`.
+   - **Production image** `pgvector/pgvector:pg16` via `asCompatibleSubstituteFor("postgres")` — same engine + extensions as prod.
+   - **`@AutoConfigureTestDatabase(replace = NONE)`** disables the default H2 swap so the slice uses the container.
+   - **Flyway builds the schema, Hibernate validates** — same startup sequence as prod, so the test also proves the migrations and entity mappings cohere.
+   - **Transactional rollback** isolates each test — seed + test run in one rolled-back transaction.
+   - **Interview line (Testcontainers):** *"I test repository queries against the same Postgres image I run in production via a singleton Testcontainers container wired with `@ServiceConnection`. Custom SQL — dialect-specific joins, `CASE`, null semantics — can pass on H2 and fail on Postgres, so the only test I trust runs on the real engine."*
+   - **Interview line (DataJpaTest):** *"`@DataJpaTest` with `@AutoConfigureTestDatabase(replace = NONE)` lets Flyway build the real schema and Hibernate validate against it — so the same test that verifies my query also proves my migrations and mappings line up. Each test rolls back, so they're isolated without cleanup."*
+
+**The highest-value SQL tests (what real Postgres proved)**
+- Leaderboard: the Hibernate-6 ad-hoc entity join resolves (player names come through), order is points-desc, and the position filter narrows *both* content and `totalElements` — proving the explicit `countQuery` applied the same join+filter (the desync bug you can't see by eye).
+- Positional rank `countBetterAdpAtPosition`: at once proved strictly-better counting, the **null-ADP player excluded** (`null < :adp` is unknown), the position filter ignoring other positions, and — via a PPR-bucket case that would count differently if it read `adpStd` — that the **searched `CASE` selects the right ADP column by parameter**.
+
+**Fixture factory — one place for "a valid entity"**
+- `TestFixtures.player/scoring/projection/stat` build fully-populated entities. Tests bypass the ETL layer, so each must satisfy every NOT NULL constraint itself — that knowledge lives once in the factory.
+- The factory covers the *common* case with sensible defaults (PPG 20.00, gp 17, team "XX"); a test needing a specific edge value builds that entity inline rather than bloating the factory signature.
+- **Triggered by a real failure:** `not-null property references a null or transient value: Player.firstName` — the hand-built `Player` set only `fullName`; in production `PlayerSyncService` fills first/last. Hibernate's entity-level NOT NULL check fires before the INSERT reaches Postgres.
+- **Interview line:** *"I centralize valid test entities in a fixture factory because tests bypass the ingestion layer and would each re-discover every NOT NULL constraint. The factory encodes the common valid case with defaults; edge values are built inline rather than bloating its signature. A 'not-null property references a null or transient value' error is Hibernate's entity check catching it before the INSERT."*
+
+**The Claude Code delegation workflow (the meta-lesson)**
+- Only four test shapes in the whole app. Learn each once by hand (the part that's on the CV — I can explain slices, MockMvc, Testcontainers in a room), then hand the repetition to Claude Code with the exemplars as templates and an explicit do-NOT list, reviewing each class on a red/green bar.
+- Reviewer discipline: close-read where the logic is real (the sync-service ETL cleansing — each rule, `999→null`, `gp 18→17`, gets its own assertion), and run the **whole** suite at the end to prove isolation, not just per-class runs.
+- Same "own what I'm selling, delegate scaffolding" line: own the patterns and the review, delegate the repetition.
+- **Interview line:** *"I scale a known test pattern with AI tooling by giving it the exemplars, hard constraints, and an explicit do-not-test list, then reviewing each class on a red/green bar — close reading where the logic is real, like ETL cleansing, and a full-suite run to prove isolation. I own the patterns and the review; the tool does the repetition."*
+
+**What got built (A–E, via Claude Code under review)**
+- **A — `PlayerScoringServiceTest`** (5, Mockito): season-routing boundary (`< current` → stats repo, `>= current` → projections repo), empty-source early return, `recomputeAllSeasons` unions both repos' distinct years and routes each correctly.
+- **B — `PlayerStatsControllerTest` / `PlayerProjectionControllerTest`** (4 + 3, `@WebMvcTest`): status codes, 200 on valid sync/get, 400 on non-numeric path variable. No `@Import(SpringDataWebConfig)` since neither returns `Page<>`.
+- **C — `PlayerStatsSyncServiceTest` / `PlayerProjectionSyncServiceTest`** (6 + 8, Mockito): a `doAnswer` capture in `@BeforeEach` (lenient under strict stubs) collects what's passed to `saveAll`; assertions cover filtering (unknown/null player ids, null stats), `gp 18→17`, `Double→Integer`, ADP `999→null`/`null→null`/valid→`BigDecimal.valueOf`, `source` from `company` with `"unknown"` fallback.
+- **D — `PlayerStatsRepositoryTest`** (2, `@DataJpaTest`): added `TestFixtures.stat(...)` (games=17, gamesPlayed=0); `findDistinctYears()` ordering + dedup across players.
+- **E — `ReadOptionApplicationTests`**: `contextLoads()` extended `AbstractPostgresTest` so the smoke test has a real container.
+
+**Note — `doAnswer` capture under strict stubs**
+- The sync tests capture the `saveAll` argument with `doAnswer` in `@BeforeEach`; declared there it's flagged as a potential unnecessary stub under `STRICT_STUBS`, so it's marked lenient. An alternative is `ArgumentCaptor` on a `verify(repo).saveAll(...)` after the call — either works; the team chose the `doAnswer` capture for symmetry across both sync tests.
+
+### Project structure (tests)
+```
+read-option/src/test/java/app/readoption/
+├── AbstractPostgresTest.java                ← singleton Testcontainers Postgres (@ServiceConnection)
+├── TestFixtures.java                        ← valid entity factory (player/scoring/projection/stat)
+├── ReadOptionApplicationTests.java          ← contextLoads() smoke (extends AbstractPostgresTest)
+├── scoring/
+│   └── ScoringServiceTest.java              ← plain unit (pre-existing)
+├── player/
+│   ├── PlayerProfileServiceTest.java        ← Mockito service (rank guard, year-split)
+│   └── PlayerControllerTest.java            ← @WebMvcTest (profile 200/404)
+├── playerstats/
+│   ├── PlayerStatsControllerTest.java       ← @WebMvcTest
+│   ├── PlayerStatsSyncServiceTest.java      ← Mockito (ETL cleansing)
+│   └── PlayerStatsRepositoryTest.java       ← @DataJpaTest (findDistinctYears)
+├── playerscoring/
+│   ├── PlayerScoringServiceTest.java        ← Mockito (source routing, recompute union)
+│   ├── PlayerScoringControllerTest.java     ← @WebMvcTest (+ @Import VIA_DTO, clamp captor)
+│   └── PlayerScoringRepositoryTest.java     ← @DataJpaTest (entity join, position filter, count)
+└── playerprojection/
+    ├── PlayerProjectionControllerTest.java  ← @WebMvcTest
+    ├── PlayerProjectionSyncServiceTest.java ← Mockito (ETL cleansing)
+    └── PlayerProjectionRepositoryTest.java  ← @DataJpaTest (CASE rank, null exclusion)
+```
+
+---
+
 ### Week 3 Status
 - [x] Day 1 — Project setup, Docker Compose, Flyway V1, Player entity + repository
 - [x] Day 2 — Sleeper API integration, PlayerSyncService, ETL pipeline (3,217 players)
@@ -1311,6 +1424,7 @@ read-option/src/main/java/app/readoption/
 - [x] Day 2 — `player_projections` table (Flyway V5), projection DTOs, `fetchProjections`, sync pipeline, controller; loaded 2026 rotowire projections
 - [x] Day 3 — `Scorable` interface, config-driven source routing, projection scoring validated against rotowire `pts_*`
 - [x] Day 4 — Query/read endpoints: leaderboard (pagination + VIA_DTO + position filter), player profile (composite DTO: history + projection + positional rank), `String`→enum migration on `scoringFormat`
+- [x] Day 5 — Test suite: four slice patterns (plain unit, Mockito service, `@WebMvcTest`, `@DataJpaTest`+Testcontainers), `TestFixtures` factory, `AbstractPostgresTest` singleton container, whole-app risk-based coverage via Claude Code under review
 
 ---
 
@@ -2084,3 +2198,15 @@ spring-ai-playground/
 - Optional filter via null-or-match guard → Criteria/Specifications when filters multiply; enum at the boundary (free 400), string at the column
 - `@ResponseStatus` maps a custom exception to a status (404); `@ControllerAdvice` is the upgrade for structured error bodies
 - Positional rank is derived (count of better ADP + 1), not stored; the null-value-ranks-#1 trap (guarded at the service); searched `CASE` picks the per-format ADP column; market-rank vs value-rank gap is the Phase 4 draft signal; window function for ranking everyone at once
+
+**Testing (Week 4 Day 5)**
+- Risk-based coverage, not uniform: test domain logic + custom SQL + web wiring; skip Lombok getters, record DTOs, inherited Spring Data CRUD, ID-class equals, framework behavior
+- Test slices load one layer: `@WebMvcTest` (web), `@DataJpaTest` (JPA), vs `@SpringBootTest` (whole context) — faster, failures localize
+- Mockito service tests with `@ExtendWith(MockitoExtension.class)` + `@Mock`, no Spring; build-by-hand over `@InjectMocks` when the constructor mixes mocks with scalars
+- `verify(mock, never())` and `ArgumentCaptor` verify *behavior/interaction* (the guard didn't fire, the clamped value crossed the boundary), not just return values
+- Strict stubs (Mockito default) fail on unused stubs — each test stubs only its real path; `lenient()` to opt out (e.g. a shared `doAnswer` capture)
+- `@WebMvcTest` + `MockMvc` + `jsonPath`; mock every controller collaborator with `@MockitoBean` (not the Boot-3.4-deprecated `@MockBean`); 400 from bad param binding, 404 from a `@ResponseStatus` exception, `@Import` the page-serialization config to assert the `VIA_DTO` envelope
+- `@DataJpaTest` + `@AutoConfigureTestDatabase(replace = NONE)` + Testcontainers (production `pgvector/pgvector:pg16` image, `@ServiceConnection`, singleton container) — runs custom SQL on the real engine; Flyway builds the schema and Hibernate validates, so migrations + mappings are proven too; transactional rollback isolates tests
+- H2-vs-Postgres: custom SQL (entity joins, `CASE`, null semantics) can pass on H2 and fail on Postgres — only the real engine test is trustworthy
+- Fixture factory centralizes valid entities because tests bypass the ingestion layer; common case with defaults, edge values inline; `not-null property references a null or transient value` is Hibernate's entity check before INSERT
+- Delegation workflow: own one exemplar of each test shape by hand, hand the repetition to AI tooling with templates + a do-not-test list, review each on a red/green bar (close-read ETL cleansing), full-suite run to prove isolation
