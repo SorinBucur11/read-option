@@ -18,11 +18,11 @@ class ScoringServiceTest {
 
         ScoringResult result = scoringService.calculate(qb, ScoringFormat.STANDARD_6PT);
 
-        // 4000*0.04=160 + 30*6=180 + 10*(-1)=-10 + 200*0.1=20 + 2*6=12
-        // + 0 + 0 + 0 + 3*(-2)=-6 + 1*2=2 = 358.00
-        assertEquals(new BigDecimal("358.00"), result.totalPoints());
-        // 358.00 / 17 = 21.06 (HALF_UP)
-        assertEquals(new BigDecimal("21.06"), result.pointsPerGame());
+        // 4000*0.04=160 + 30*6=180 + 10*(-2)=-20 + 200*0.1=20 + 2*6=12
+        // + 0 + 0 + 0 + 3*(-2)=-6 + 1*2=2 = 348.00
+        assertEquals(new BigDecimal("348.00"), result.totalPoints());
+        // 348.00 / 17 = 20.47 (HALF_UP)
+        assertEquals(new BigDecimal("20.47"), result.pointsPerGame());
     }
 
     @Test
