@@ -4,7 +4,6 @@ import app.readoption.config.SpringDataWebConfig;
 import app.readoption.scoring.ScoringFormat;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
@@ -18,12 +17,11 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.math.BigDecimal;
 import java.util.List;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -50,7 +48,7 @@ class PlayerScoringControllerTest {
     @DisplayName("defaults applied (season from config, STANDARD_6PT); returns VIA_DTO envelope")
     void leaderboardDefaults() throws Exception {
         when(playerScoringRepository.findLeaderboard(
-                eq(2026), eq(ScoringFormat.STANDARD_6PT), isNull(), any(Pageable.class)))
+                eq(2026), eq(ScoringFormat.STANDARD_6PT), isNull(), isNull(), any(Pageable.class)))
                 .thenReturn(onePage());
 
         mockMvc.perform(get("/api/scoring/leaderboard"))
@@ -63,17 +61,15 @@ class PlayerScoringControllerTest {
     }
 
     @Test
-    @DisplayName("size above MAX_PAGE_SIZE is clamped before the repository is hit")
-    void leaderboardClampsSize() throws Exception {
-        when(playerScoringRepository.findLeaderboard(any(), any(), any(), any(Pageable.class)))
-                .thenReturn(onePage());
+    @DisplayName("size above the max is rejected with 400 and never reaches the repository")
+    void leaderboard_rejectsOversizedPageSize() throws Exception {
+        mockMvc.perform(get("/api/scoring/leaderboard")
+                        .param("season", "2026")
+                        .param("format", "STANDARD_6PT")
+                        .param("size", "500"))
+                .andExpect(status().isBadRequest());
 
-        mockMvc.perform(get("/api/scoring/leaderboard?size=500"))
-                .andExpect(status().isOk());
-
-        ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
-        verify(playerScoringRepository).findLeaderboard(any(), any(), any(), captor.capture());
-        assertThat(captor.getValue().getPageSize()).isEqualTo(100);   // clamped to MAX_PAGE_SIZE
+        verify(playerScoringRepository, never()).findLeaderboard(anyInt(), any(), any(), any(), any());
     }
 
     @Test

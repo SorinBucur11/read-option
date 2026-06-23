@@ -15,7 +15,7 @@ public enum ScoringFormat {
     STANDARD_4PT("Standard", 0.0, 4),
     STANDARD_6PT("Standard (6pt Pass TD)", 0.0, 6),
     HALF_PPR_4PT("Half PPR", 0.5, 4),
-    HALF_PPR_6PT("Half PPR (6pt Pass TD", 0.5, 6),
+    HALF_PPR_6PT("Half PPR (6pt Pass TD)", 0.5, 6),
     PPR_4PT("PPR", 1.0, 4),
     PPR_6PT("PPR (6pt Pass TD)", 1.0, 6);
 

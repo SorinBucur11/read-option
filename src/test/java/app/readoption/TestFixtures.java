@@ -18,15 +18,23 @@ public final class TestFixtures {
     }
 
     public static Player player(String id, String fullName, String position) {
+        return player(id, fullName, position, "XX", true);
+    }
+
+    public static Player player(String id, String fullName, String position, String team, boolean active) {
         return Player.builder()
                 .id(id)
                 .firstName("First")
                 .lastName("Last")
                 .fullName(fullName)
                 .position(position)
-                .team("XX")
-                .active(true)
+                .team(team)
+                .active(active)
                 .build();
+    }
+
+    public static PlayerScoring scoring(String playerId, int year, ScoringFormat format) {
+        return scoring(playerId, year, format, "100.00");
     }
 
     public static PlayerScoring scoring(String playerId, int year, ScoringFormat format, String totalPoints) {

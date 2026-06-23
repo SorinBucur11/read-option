@@ -21,27 +21,31 @@ public interface PlayerScoringRepository extends JpaRepository<PlayerScoring, Pl
 
     @Query(value = """
         SELECT new app.readoption.playerscoring.LeaderboardRow(
-                   p.id, p.fullName, p.position, p.team,
-                   s.totalPoints, s.pointsPerGame, s.gamesPlayed)
+            p.id, p.fullName, p.position, p.team,
+            s.totalPoints, s.pointsPerGame, s.gamesPlayed)
         FROM PlayerScoring s
         JOIN Player p ON p.id = s.playerId
         WHERE s.year = :season
           AND s.scoringFormat = :format
           AND (:position IS NULL OR p.position = :position)
+          AND (:active IS NULL OR p.active = :active)
         ORDER BY s.totalPoints DESC
         """,
             countQuery = """
-        SELECT count(s)
+        SELECT COUNT(s)
         FROM PlayerScoring s
         JOIN Player p ON p.id = s.playerId
         WHERE s.year = :season
           AND s.scoringFormat = :format
           AND (:position IS NULL OR p.position = :position)
+          AND (:active IS NULL OR p.active = :active)
         """)
-    Page<LeaderboardRow> findLeaderboard(@Param("season") Integer season,
-                                         @Param("format") ScoringFormat format,
-                                         @Param("position") String position,
-                                         Pageable pageable);
+    Page<LeaderboardRow> findLeaderboard(
+            @Param("season") int season,
+            @Param("format") ScoringFormat format,
+            @Param("position") String position,
+            @Param("active") Boolean active,
+            Pageable pageable);
 
     List<PlayerScoring> findByPlayerIdAndScoringFormatOrderByYearAsc(
             String playerId, ScoringFormat format);

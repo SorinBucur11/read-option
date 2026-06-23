@@ -2,14 +2,18 @@ package app.readoption.playerscoring;
 
 import app.readoption.scoring.Position;
 import app.readoption.scoring.ScoringFormat;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+@Validated
 @RestController
 @RequestMapping("/api/scoring")
 public class PlayerScoringController {
@@ -53,12 +57,13 @@ public class PlayerScoringController {
             @RequestParam(defaultValue = "${readoption.current-season}") int season,
             @RequestParam(defaultValue = "STANDARD_6PT") ScoringFormat format,
             @RequestParam(required = false) Position position,
-            @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "25") int size) {
+            @RequestParam(required = false) Boolean active,
+            @RequestParam(defaultValue = "0") @Min(0) int page,
+            @RequestParam(defaultValue = "25") @Min(1) @Max(MAX_PAGE_SIZE) int size) {
 
-        int safeSize = Math.min(size, MAX_PAGE_SIZE);
-        Pageable pageable = PageRequest.of(page, safeSize);
-        String positionName = (position != null) ? position.name() : null;
-        return playerScoringRepository.findLeaderboard(season, format, positionName, pageable);
+        Pageable pageable = PageRequest.of(page, size);
+        String positionName = position != null ? position.name() : null;
+
+        return playerScoringRepository.findLeaderboard(season, format, positionName, active, pageable);
     }
 }
