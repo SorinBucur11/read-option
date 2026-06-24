@@ -359,6 +359,15 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | **`@AutoConfigureTestDatabase(replace = NONE)`** | Stops `@DataJpaTest` swapping the datasource for embedded H2, so the slice uses the real (Testcontainers) database. |
 | **Strict stubs (Mockito)** | `MockitoExtension` default: an unused stub fails the test; forces each test to stub only its real call path. `lenient()` opts a stub out. |
 | **Fixture factory** | One place that builds valid test entities satisfying all constraints; tests bypass ingestion so they'd otherwise each re-discover NOT NULL fields. |
+| **`@RestControllerAdvice`** | `@ControllerAdvice` + `@ResponseBody`. One class of `@ExceptionHandler` methods applied across all controllers; Spring picks the most specific handler for the thrown type. |
+| **`ProblemDetail` (RFC 9457)** | Spring 6 standardized error body — `type`/`title`/`status`/`detail`/`instance` + open properties, served as `application/problem+json`. Returning it directly sets status + content type. |
+| **`ResponseEntityExceptionHandler`** | Base class with built-in `@ExceptionHandler`s for the Spring MVC exception family (rendered as ProblemDetail in Boot 3). Extend it to inherit them and prevent a catch-all masking a framework 4xx into 500. |
+| **`@Validated` vs `@Valid`** | `@Validated` (Spring, on class) enables method-parameter validation via proxy; `@Valid` (Jakarta, on a `@RequestBody`) cascade-validates fields. |
+| **`MethodArgumentNotValidException`** | Thrown by `@Valid` on a request body; a Spring MVC exception → 400 handled by the base class. |
+| **`ConstraintViolationException`** | Thrown by `@Min`/`@Max` on method params under `@Validated`; NOT a Spring MVC exception → 500 unless explicitly handled. |
+| **`spring-boot-starter-validation`** | Separate dependency since Boot 2.3; without it Bean Validation annotations are silently inert. |
+| **Projection interface (Spring Data)** | Interface of getters whose names match query column aliases; Spring generates the implementing proxy. The native-query analogue of a JPQL constructor expression (bound by name, not constructor position). |
+| **Native query (`nativeQuery = true`)** | Raw SQL against the DB — table/column names, no JPQL grammar. Required for features JPQL can't express (window functions). No constructor expression available. |
 
 ### Fantasy Football Domain
 
@@ -376,6 +385,13 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | **TE premium** | Scoring variant awarding tight ends extra points per reception (e.g., 1.5 vs 1.0). Position-dependent rule — can't be expressed by a format that only varies reception value and passing-TD value. Needs a parameterized ScoringRules + player position. |
 | **ADP sentinel (999)** | Sleeper's "unranked" marker in ADP fields. Converted to NULL in the ETL so sorting doesn't bury undrafted players, and to stay inside `NUMERIC(5,2)`. |
 | **Projection provider vs aggregator** | Sleeper aggregates projections from providers (the `company` field, e.g. rotowire). The provider is the real provenance — what gets stored in `source`. |
+| **Window function** | Aggregate computed over a partition of rows while keeping every row (vs `GROUP BY` which collapses). `OVER (PARTITION BY ... ORDER BY ...)`. |
+| **`RANK` / `DENSE_RANK` / `ROW_NUMBER`** | Tie handling: `RANK` shares then skips (1,1,1,4); `DENSE_RANK` shares no skip (1,1,1,2); `ROW_NUMBER` always distinct (1,2,3,4). |
+| **CTE (`WITH ... AS`)** | Named subquery; materializes a result the outer query can reference. Used to compute window ranks before filtering on them (window functions evaluate after WHERE). |
+| **`NULLS FIRST` / `NULLS LAST`** | Controls where nulls sort in an `ORDER BY`. Postgres `ASC` defaults to `NULLS LAST`. Relevant to ranking nullable columns. |
+| **Value rank vs market rank** | Value rank = standing by the engine's projected points; market rank = standing by ADP. The gap is the draft edge — engine values a player higher/lower than the market drafts him. |
+| **VORP (Value Over Replacement Player)** | Projected points minus the last *startable* player at the position (replacement level, from league size + roster slots). Makes positions comparable on one scale and exposes tier cliffs. Phase 3–4; deterministic → engine. |
+| **Tier cliff** | A steep points dropoff between adjacent players at a position; shows as a VORP collapse. The "is this gap a cliff or noise?" judgment → LLM (Phase 4). |
 
 ---
 
@@ -417,11 +433,17 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | Hibernate 6 ad-hoc entity joins | ✅ Done (Week 4 Day 4) — scoring⋈player |
 | `@Enumerated(EnumType.STRING)` | ✅ Done (Week 4 Day 4) — scoringFormat field |
 | Positional rank (derived, CASE count) | ✅ Done (Week 4 Day 4) — "QB8" in profile |
-| Window functions (`RANK() OVER`) | Phase 4 — leaderboard market-rank overlay |
+| Window functions (`RANK() OVER`) | ✅ Done (Week 5 Day 1) — leaderboard value/market rank overlay |
 | Mockito service tests (no Spring) | ✅ Done (Week 4 Day 5) — profile/scoring/sync services |
 | `@WebMvcTest` controller slices | ✅ Done (Week 4 Day 5) — all four controllers |
 | `@DataJpaTest` + Testcontainers | ✅ Done (Week 4 Day 5) — repo queries on real Postgres |
 | Whole-app risk-based test suite | ✅ Done (Week 4 Day 5) — fixture factory + Claude Code delegation |
+| `@RestControllerAdvice` + `ProblemDetail` (RFC 9457) | ✅ Done (Week 5 Day 1) |
+| Bean Validation (`@Validated`, `@Min`/`@Max`, the two exceptions) | ✅ Done (Week 5 Day 1) |
+| Native query + projection interface | ✅ Done (Week 5 Day 1) — ranked leaderboard |
+| CTEs + rank-then-filter + SQL logical order | ✅ Done (Week 5 Day 1) |
+| Active-player filter | ✅ Done (Week 5 Day 1) — built, tested, dormant |
+| VORP / tier cliffs | Phase 3–4 — engine computes VORP, LLM reasons about cliffs |
 
 ---
 
@@ -469,7 +491,7 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 
 ---
 
-## Phase 1 — Data Foundation (IN PROGRESS)
+## Phase 1 — Data Foundation ✅ COMPLETE
 
 **Project:** Read Option (`readoption.app`)
 **Repo:** `read-option` (GitHub: public)
@@ -1413,6 +1435,115 @@ read-option/src/test/java/app/readoption/
 
 ---
 
+### Week 5 Day 1 — Read-API Polish: RFC 9457 Errors, Pagination Validation, Active Filter + Window-Function Rank Overlay
+**Time:** ~4h
+
+**What I built (three chunks, closing Phase 1)**
+- **Chunk 1 — error handling + validation.** `GlobalExceptionHandler` (`@RestControllerAdvice extends ResponseEntityExceptionHandler`) returning RFC 9457 `ProblemDetail` for every error path; `spring-boot-starter-validation` added; `@Min`/`@Max` on `page`/`size` with `@Validated` on the controller; oversized `size` switched from silent clamp to a rejected `400`.
+- **Chunk 2 — active-player filter.** Optional `Boolean active` null-or-match guard on the leaderboard, mirrored into the count query; real-Postgres test proving the guard drops an inactive row.
+- **Chunk 3 — market-rank window-function overlay.** New native query `findRankedLeaderboard` with four `RANK() OVER (...)` columns (value/market × positional/overall), a `RankedLeaderboardRow` projection interface, a new `GET /api/scoring/leaderboard/ranked` endpoint, and a real-Postgres test pinning RANK-skip semantics, the null-ADP guard, and rank-then-filter.
+
+**Chunk 1 — RFC 9457 error handling**
+
+1. **`@RestControllerAdvice` — centralized fault barrier.** One class with `@ExceptionHandler` methods applies across every controller. `@RestControllerAdvice` = `@ControllerAdvice` + `@ResponseBody` (same relationship as `@Controller`/`@RestController`). Spring's `ExceptionHandlerExceptionResolver` picks the *most specific* handler for the thrown type. This is the web-layer version of the Phase 0 exception translation (wrapping `IOException` into `ClaudeApiException`) — translate any failure into a consistent client-facing fault at one boundary instead of scattering try/catch. Camel analogue: a global `onException` for the whole route set.
+   - **Interview line:** *"`@RestControllerAdvice` centralizes exception handling across all controllers. Spring picks the most specific `@ExceptionHandler` for the thrown exception, and an explicit handler takes precedence over a `@ResponseStatus` on the exception itself."*
+
+2. **`ProblemDetail` (RFC 9457) — the standardized error contract.** Spring 6 / Boot 3 ship `org.springframework.http.ProblemDetail`, implementing RFC 9457 ("Problem Details for HTTP APIs"). Standard fields `type` / `title` / `status` / `detail` / `instance` plus an open properties map, served as `application/problem+json`. Returning a `ProblemDetail` directly (not wrapped in `ResponseEntity`) sets the HTTP status from its `status` field and the content type automatically — confirmed live: `Content-Type: application/problem+json` with no manual wiring. Same instinct as `VIA_DTO` and ActiveMQ message schemas — don't leak an unstable internal shape into a published contract, except here it's a documented *standard* a custom record can't claim.
+   - **Interview line:** *"`ProblemDetail` is Spring 6's implementation of RFC 9457 — a standardized error body served as `application/problem+json`. I use it instead of a custom error record so the API speaks a documented standard clients and tooling already understand."*
+
+3. **Extending `ResponseEntityExceptionHandler` — inherit framework-exception handling + precedence safety.** The base class already has `@ExceptionHandler` methods for the Spring MVC exception family (malformed body, wrong method, type mismatch, unknown URL), rendered as `ProblemDetail` in Boot 3. Extending it means I write handlers only for my exceptions plus any framework one I want to customize. Crucially, it removes a footgun: a broad `@ExceptionHandler(Exception.class)` catch-all would otherwise swallow framework 404s/405s into 500s — but with the base class present, those have *more specific* inherited handlers, so the catch-all only catches the genuinely unexpected. Verified: `format=BOGUS` hit my explicit `handleTypeMismatch` (title "Invalid Parameter", 400), proving most-specific won over both the inherited handler and the catch-all.
+   - **Interview line:** *"I extend `ResponseEntityExceptionHandler` so my advice inherits ProblemDetail handling for all standard Spring MVC exceptions and I override only what I care about. It also means a catch-all `Exception` handler can't mask a framework 4xx into a 500, because those have more specific inherited handlers."*
+
+4. **Bean Validation — the starter, `@Validated` vs `@Valid`, and the two exceptions.** Three things: (a) `spring-boot-starter-validation` is a *separate* dependency since Boot 2.3 — without it, `@Min` silently does nothing (classic "my annotations are inert" gotcha). (b) `@Validated` (Spring) on the *controller class* switches on method-parameter validation via an AOP proxy, for constraints on `@RequestParam`; `@Valid` (Jakarta) on a `@RequestBody` object cascade-validates its fields — different annotations, different jobs. (c) The interview-grade detail: validation surfaces **two** exception types by constraint location. `@Valid` on a body → `MethodArgumentNotValidException` (a Spring MVC exception, handled by the base class → 400). `@Min`/`@Max` on params under `@Validated` → `jakarta.validation.ConstraintViolationException` (NOT a Spring MVC exception → defaults to 500 unless I write a handler). My `page`/`size` case is the second one, so it gets an explicit handler producing a structured 400.
+   - **Interview line:** *"Bean Validation surfaces two exceptions. `@Valid` on a request body throws `MethodArgumentNotValidException`, handled as 400 out of the box. `@Min`/`@Max` on method params under `@Validated` throw `ConstraintViolationException`, which isn't a Spring MVC exception, so it's 500 unless I handle it explicitly."*
+
+5. **Reject vs clamp for `size` (design decision).** Switched the leaderboard from silently clamping `size` to `MAX_PAGE_SIZE` → rejecting oversized requests with `@Max` + 400. A published contract should make "you exceeded the limit" explicit rather than quietly returning less than asked — especially when the caller is another service or an LLM tool that can't see the coercion. This changed behavior, so the Day 4 `ArgumentCaptor` clamp test had to flip to assert reject-with-400 + repo never called — which is *why* that test existed (the suite is in place so polish can refactor safely). The shift from "captor proves the clamp" to "`verify(never())` proves the guard short-circuits" is the same behavior-not-state lesson from Day 5: validation fires before the method body, so there's no clamped value to capture — instead assert the collaborator was never reached.
+   - **Interview line:** *"For an optional `size` param I reject oversized requests with `@Max` and a 400 rather than silently clamping. A published contract should make exceeding the limit explicit, especially when the caller is a service or an LLM tool that can't see the coercion happened."*
+
+6. **Never leak internal exception detail.** The catch-all logs the real cause (`log.error("Unhandled exception", ex)`) but returns a *generic* message — never `ex.getMessage()` to the client, which can expose stack internals, SQL fragments, class names. Log the cause, return a generic body. Security habit interviewers probe for.
+
+**Chunk 2 — active-player filter (and the "tested but dormant" lesson)**
+
+7. **Reused the null-or-match guard, with one new wrinkle.** `AND (:active IS NULL OR p.active = :active)` on the already-joined `Player`, mirrored into the count query (and the join it depends on) so `totalElements` doesn't desync. The wrinkle: the param must be a boxed `Boolean`, not primitive — the guard needs null to mean "filter off," and a primitive `boolean` can't be null, so it'd default to `false` and silently filter to inactive-only. Bad value (`active=garbage`) → 400 via the chunk-1 `handleTypeMismatch` (the chunks compounding — error handling picked it up for free).
+   - **Interview line:** *"An optional boolean filter has to be a boxed `Boolean`, not primitive — the null-or-match guard needs null to mean 'filter off,' and a primitive can't be null, so it'd default to false and silently filter to the wrong set."*
+
+8. **Keep a tested-but-dormant filter (the YAGNI distinction).** Every player in my data is currently active, so the filter changes no live count (verified: 2022 unfiltered = 2022 active = 3216, and I checked the DB directly to confirm zero inactive scored players — *not* inferred from equal counts). I kept it anyway. The filter is a property of the API *contract*; the empty result set is a property of *today's data* — different lifecycles. It's verified by a `@DataJpaTest` that seeds an explicitly inactive row, so it's proven independent of the live data, and it's inert when the param is absent, so it costs nothing. YAGNI is about not building *speculative* features — not deleting *built-and-tested* behavior whose target set is temporarily empty. Same judgment as Day 1 rejecting a source discriminator (speculative) while keeping what the year discriminator earned — opposite direction, same line. Removing it would couple a stable contract to a transient data state and force a breaking change when ingestion later captures inactive players (a Phase 5 / data-completeness item).
+   - **Interview line:** *"I kept the active filter even though every player in my data is currently active. The filter is a property of the API contract; the empty result set is a property of today's data — different lifecycles. It's tested against an explicitly inactive row, so it's verified independent of the live data, and inert when the param is absent. YAGNI is about not building speculative features, not deleting built-and-tested behavior whose target set is temporarily empty."*
+   - **Same trap as Day 3 named:** "200 OK with an unchanged count" had two explanations — a working filter on retiree-free data, or a dead WHERE clause. Disambiguated by inspecting the actual data, not trusting the surface signal. Structural success ≠ semantic correctness. The repo test (seeding an inactive row) is now the *only* place the active guard is exercised against a true inactive case, because production data can't exercise it — which is the argument for why that test matters.
+
+**Chunk 3 — window-function rank overlay (the deep one)**
+
+9. **Window functions: aggregate without collapsing.** `GROUP BY` collapses N rows into one per group — you lose the individual rows. A window function computes the same kind of aggregate over a partition but *keeps every row*, attaching the result to each. `OVER (...)` is what turns an ordinary aggregate into a window function. `PARTITION BY` is the window analogue of `GROUP BY` but *without collapsing*; the `ORDER BY` *inside* `OVER` is internal to the window and independent of the query's final `ORDER BY`.
+   - **Interview line:** *"`GROUP BY` collapses rows into one per group and you lose the individual rows. A window function computes the same aggregate over a partition but keeps every row, attaching the result to each. The `OVER` clause defines the window — without it `COUNT(*)` collapses; with `OVER (PARTITION BY x)` it annotates."*
+
+10. **`RANK` vs `DENSE_RANK` vs `ROW_NUMBER` — the tie question.** For a three-way tie at rank 1 then the next value: `ROW_NUMBER` → 1,2,3,4 (never ties, breaks arbitrarily); `RANK` → 1,1,1,4 (ties share, then *skips* — "Olympic"); `DENSE_RANK` → 1,1,1,2 (ties share, *no* skip). Chose `RANK` for both value and market rank: two players tied for RB5 means the next is RB7, because two players are ahead of him, not one tier.
+    - **Interview line:** *"`ROW_NUMBER` always assigns distinct numbers. `RANK` lets ties share then skips — three-way tie at 1, next is 4. `DENSE_RANK` shares then doesn't skip — next is 2. For a leaderboard where ties mean genuinely-equal standing, `RANK` is correct: two players tied for 5th means the next is 7th."*
+
+11. **JPQL has no window-function grammar → forced to native SQL.** No `OVER` / `PARTITION BY` in JPQL. So `RANK() OVER (...)` requires `@Query(nativeQuery = true)` — raw Postgres SQL, table/column names not entity/field names. Consequence: no JPQL constructor expression (`SELECT new ...` is JPQL-only), so I map with a **Spring Data projection interface** instead — getters whose names match the column aliases, Spring generates the implementing proxy. The native-query counterpart to a constructor expression; binding is name-based (snake_case alias → camelCase getter), so aliases and getters must line up exactly (same discipline as the extracted `StatLine` interface). Nullable columns force boxed return types: market ranks are null for undrafted players → `Integer`, not `int`.
+    - **Interview line (native forcing function):** *"JPQL has no grammar for window functions — no `OVER` or `PARTITION BY`. So a `RANK() OVER` query has to be `nativeQuery = true`. The tradeoff: I lose JPQL portability and can't use a constructor expression, so I map the result with a Spring Data projection interface."*
+    - **Interview line (projection):** *"For native-query results I map with a projection interface — getters matching the column aliases, Spring generates the proxy. It's the native-query analogue of a JPQL constructor expression, but bound by name instead of constructor position, so the SQL aliases and the getters have to line up exactly."*
+
+12. **The null-ADP trap, window-function form.** `RANK() OVER (ORDER BY adp ASC)` ranks null-ADP rows too — Postgres sorts `NULLS LAST` by default, so they'd get the *highest* ranks (250, 251...). An undrafted player should have *no* market rank, not "RB 47th." Wrapped the rank in `CASE WHEN adp IS NOT NULL THEN RANK() OVER (... ASC NULLS LAST) END` — the real players still rank 1..N correctly because nulls sort last and never displace them, and the CASE blanks the null rows to null. Wrote `NULLS LAST` explicitly even though it's the Postgres default — documents intent. Same trap as Day 4 (null value masquerading as a rank), new mechanics (`NULLS FIRST/LAST` is itself an interview-worthy Postgres detail).
+    - **Interview line:** *"`RANK() OVER (ORDER BY adp ASC)` assigns ranks to null-ADP rows — Postgres sorts nulls last by default, so they'd get the highest ranks. An undrafted player should have no market rank, so I wrap the rank in `CASE WHEN adp IS NOT NULL` to null it out. The real players still rank 1..N because nulls sort last and never displace them."*
+
+13. **LEFT JOIN so unprojected players survive.** `player_scoring` has every scored player; `player_projections` only has current-season rows for players with projections. An INNER JOIN would silently drop a scored player without a projection. LEFT JOIN keeps every scoring row, ADP where it exists, null where it doesn't. Join on the full composite key `(player_id, year)` so ADP matches the right season. For a historical season there are no current projections, so every ADP is null and every market rank is null — correct, because there's no "market" for a past draft. Market rank is inherently current-season; the LEFT JOIN makes that fall out with no special case.
+    - **Interview line:** *"I LEFT JOIN projections onto scoring rather than inner-joining, because a scored player without a projection should still appear with a null ADP and null market rank — an inner join would drop him. The join is on the full composite key, so ADP is matched to the right season."*
+
+14. **Rank-then-filter, not filter-then-rank (design decision + a hard SQL rule).** Decided overall rank must mean "standing among ALL players," not "among the filtered subset" — a rank shouldn't change meaning based on the view (filter to RB and the top RB is still overall #24, not #1). This forced a structure: **population filters (`season`, `format`) go in the CTE — they define what "all players" means; view filters (`position`, `active`) go in the outer query — they decide what to show.** Get this wrong and ranks are subtly meaningless (format outside → ranks a player's STANDARD vs PPR scores against each other; position inside → degenerate overall=positional). And a hard rule made the two-CTE shape mandatory: **window functions evaluate *after* `WHERE` in SQL's logical order, so you can't filter on a window result in the same SELECT** — the alias doesn't exist yet at filter time. Computing ranks in a CTE materializes them as columns the outer `WHERE` can see. (Same rule is why `WHERE value_rank_overall <= 50` for "top 50 overall" needs an outer query too.)
+    - **Interview line (population vs view):** *"I rank over the full field then filter the view, so overall rank reflects standing among everyone, not the subset the caller filtered to. The window runs in a CTE constrained only by season and format — the population being ranked — and the position/active filters apply in the outer query. Population filters before the window, view filters after."*
+    - **Interview line (evaluation order):** *"Window functions evaluate after the WHERE clause in SQL's logical order, so you can't filter on a window result in the same SELECT — the alias doesn't exist yet. To filter or further-rank on a window result you compute it in a CTE, which materializes it as a column the outer WHERE can see."*
+
+15. **The overlay's actual product: the value-vs-market gap.** Four ranks per player (value/market × positional/overall). The gap between value rank and market rank — "the engine values him RB5, the market drafts him RB15" — is the draft edge. Live data confirmed it behaves the way draft theory predicts: the *top* of every position is efficiently priced (value rank ≈ market rank for the elite), and disagreement *opens up at the edges* (Derrick Henry: value RB5, market RB15) — which is exactly where exploitable draft value lives. This is the Phase 4 LLM signal, now computable.
+
+16. **Count query needs no CTEs.** Ranks annotate rows, they don't change the row *count* — so the count query is a plain `COUNT(*)` over the same join + filters, no window functions, no CTE. Must carry the same `position`/`active` guards (and the join they need) or `totalElements` desyncs. Computing all those ranks just to count them would be wasted work.
+    - **Interview line:** *"For a paginated window-function query, the count query is a plain `COUNT(*)` over the base join and filters, not the ranking query — ranks annotate rows, they don't change the count, so counting them is wasted work. The count still repeats the filters and join or the total desyncs from the content."*
+
+17. **Two String params for one concept.** `format` (e.g. `STANDARD_6PT`) selects which scoring rows to rank; `adpBucket` (e.g. `STANDARD`) selects which per-format ADP column to rank market position over. Related but not identical — 4PT and 6PT share one ADP bucket (`ScoringFormat.adpBucket()`). Both passed as `String` because native SQL has no enum awareness; the controller takes typed enums (free 400 on bad input via chunk-1 handler) and derives `format.name()` + `format.adpBucket().name()`. Enum at the boundary, string at the column — mandatory here (JPQL could convert; native can't), not stylistic.
+    - **Interview line:** *"I pass the scoring format and the ADP bucket as separate parameters because they answer different questions — the format selects which scoring rows to rank, the bucket selects which per-format ADP column to rank market position over. A 6-point and a 4-point format share one ADP bucket, so they're related but not the same value."*
+
+**The window-function test (real Postgres, hand-calculated)**
+- Tiny deliberate seed (5 players: 2 QB, 3 RB) with a **points tie** (two RBs at 300) and an **undrafted player** (no projection row). Every expected rank hand-calculable.
+- **Load-bearing assertions:** (a) undrafted player's overall value rank = **5** after a two-way tie at 3 — pins `RANK` skip semantics (would be 4 for `DENSE_RANK`, and `ROW_NUMBER` would break the tie). One assertion guards the function choice. (b) undrafted player's market ranks **null**, value rank real — pins the null-ADP guard + LEFT JOIN. (c) top RB's overall value rank = **3** under a position filter — pins rank-then-filter (would be 1 if filter-then-rank regressed).
+- **Why real Postgres, not H2:** `RANK`'s tie-and-skip and `NULLS LAST` semantics differ between engines — an H2 test can pass with *wrong numbers*. The strongest case in the whole suite for why H2 lies. `@AutoConfigureTestDatabase(replace = NONE)` + the `pgvector/pgvector:pg16` singleton container.
+    - **Interview line:** *"I test window-function queries on real Postgres, never H2, because RANK's tie-and-skip and NULLS handling differ between engines — an H2 test can pass with wrong numbers. My seed is tiny and includes a tie and an undrafted player so every expected rank is hand-calculable, which lets one assertion — an overall rank of 5 after a two-way tie at 3 — pin that I'm getting RANK and not DENSE_RANK or ROW_NUMBER."*
+
+**Two questions I raised that map onto the architecture (VORP / the Phase 3–4 hook)**
+- Asked: shouldn't overall (cross-positional) rank matter, and how do we handle a tier *cliff* (RB1=300, RB2=299, RB3=297, **RB4=240**)? Both are the door to **VORP — Value Over Replacement Player**.
+- **Overall rank is now** (free — `RANK() OVER (ORDER BY points DESC)`, just omit the partition). But raw overall rank by points is a *trap*: a QB's 380 isn't 80 points better than an RB's 300, because replacement-level QBs also score high. Positions only become comparable via points-over-replacement.
+- **VORP / tier cliffs are Phase 3–4.** VORP = projected points minus the last *startable* player at the position (replacement level, derived from `LeagueSettings` roster slots + league size). It simultaneously makes positions comparable on one scale *and* exposes cliffs (a steep dropoff shows as a VORP collapse). The architecture fork: **VORP itself is deterministic math → it belongs in the Java engine** (same Day 2 boundary — arithmetic lives in the engine). **Tier *cliffs* are a judgment call** ("is a 12-point gap a cliff or noise?") → that's where the LLM reasons over VORP-annotated data. Same line all project: providers predict, Java scores/ranks/values, the LLM strategizes. Today's overlay already carries `total_points` and ADP, so VORP needs no new data plumbing later — substrate laid, not precluded.
+    - **Interview line (domain fluency):** *"Raw rank treats adjacent players as equal-distance, but draft value is points over replacement, not ordinal position. VORP — projected points minus the last startable player at a position — makes positions comparable on one scale and exposes tier cliffs, because a steep dropoff shows as a collapse in value over replacement. That's why a lower-scoring RB can be a better pick than a higher-scoring QB."*
+
+**Live-data verification (chunk 3)**
+- 2026 all positions: value ranks track points; the top 5 are all QBs (6pt passing TD inflating QBs — real, not a bug); Josh Allen value rank 1 / market rank 31 — the engine-vs-market gap visible immediately.
+- 2026 RB filter: top RB Bijan value-rank-position 1 but value-rank-overall 24 — rank-then-filter confirmed empirically (would be 1 if broken). `totalElements` dropped to 674 — count query carried the filter.
+- 2022 historical: all `adp`/market ranks null, value ranks populated — LEFT JOIN + null guard both working in one response.
+
+**Mistakes / things I learned**
+- `jq` not installed in Git Bash (MINGW64 has no `apt`; that was a WSL command). Used `grep -o '"totalElements":[0-9]*'` instead — fine for these checks.
+- Reading "filtered count == unfiltered count" as "filter works" would have been the Day 3 trap; checked the DB directly instead.
+
+**Production items still deferred (noted, not blocking)**
+- Active filter is architecturally correct but operationally dormant until ingestion captures inactive (departed) players — Phase 5 / data-completeness.
+- VORP, tier detection, cross-positional draft pressure — Phase 3–4 (engine computes VORP, LLM reasons about cliffs).
+
+### Project structure (Week 5 Day 1)
+```
+read-option/src/main/java/app/readoption/
+├── error/
+│   └── GlobalExceptionHandler.java          ← NEW (@RestControllerAdvice extends ResponseEntityExceptionHandler, ProblemDetail)
+├── playerscoring/
+│   ├── PlayerScoringController.java          ← @Validated, @Min/@Max, + GET /leaderboard/ranked
+│   ├── PlayerScoringRepository.java          ← + findRankedLeaderboard (native, 3-CTE window query); active guard on findLeaderboard
+│   └── RankedLeaderboardRow.java             ← NEW (projection interface)
+└── (pom.xml)                                 ← + spring-boot-starter-validation
+
+read-option/src/test/java/app/readoption/
+└── playerscoring/
+    └── PlayerScoringRankedRepositoryTest.java ← NEW (@DataJpaTest, RANK skip / null-ADP / rank-then-filter on real Postgres)
+```
+
+---
+
 ### Week 3 Status
 - [x] Day 1 — Project setup, Docker Compose, Flyway V1, Player entity + repository
 - [x] Day 2 — Sleeper API integration, PlayerSyncService, ETL pipeline (3,217 players)
@@ -1425,6 +1556,19 @@ read-option/src/test/java/app/readoption/
 - [x] Day 3 — `Scorable` interface, config-driven source routing, projection scoring validated against rotowire `pts_*`
 - [x] Day 4 — Query/read endpoints: leaderboard (pagination + VIA_DTO + position filter), player profile (composite DTO: history + projection + positional rank), `String`→enum migration on `scoringFormat`
 - [x] Day 5 — Test suite: four slice patterns (plain unit, Mockito service, `@WebMvcTest`, `@DataJpaTest`+Testcontainers), `TestFixtures` factory, `AbstractPostgresTest` singleton container, whole-app risk-based coverage via Claude Code under review
+
+### Week 5 Status
+- [x] Day 1 — Read-API polish: RFC 9457 error handling (`@RestControllerAdvice` + `ProblemDetail`), `@Min`/`@Max` pagination validation, active-player filter, market-rank window-function overlay (native query + projection interface + real-Postgres test). **Phase 1 closed.**
+
+---
+
+## Phase 1 — COMPLETE ✅
+
+Data foundation done: ETL pipeline (players, 6 seasons of stats, current-season projections), deterministic scoring engine (6 formats), computed scoring table, read API (player profile + leaderboard + ranked leaderboard with window-function value/market overlay), RFC 9457 error handling, pagination validation, and a risk-based test suite (4 slice patterns, real-Postgres custom-SQL coverage).
+
+**Hours invested:** ~72h
+
+Next: Phase 2 — projections aggregator (first real LLM use: multi-source reconciliation).
 
 ---
 

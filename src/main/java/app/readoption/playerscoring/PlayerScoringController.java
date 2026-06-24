@@ -66,4 +66,25 @@ public class PlayerScoringController {
 
         return playerScoringRepository.findLeaderboard(season, format, positionName, active, pageable);
     }
+
+    @GetMapping("/leaderboard/ranked")
+    public Page<RankedLeaderboardRow> rankedLeaderboard(
+            @RequestParam(defaultValue = "${readoption.current-season}") int season,
+            @RequestParam(defaultValue = "STANDARD_6PT") ScoringFormat format,
+            @RequestParam(required = false) Position position,
+            @RequestParam(required = false) Boolean active,
+            @RequestParam(defaultValue = "0") @Min(0) int page,
+            @RequestParam(defaultValue = "25") @Min(1) @Max(MAX_PAGE_SIZE) int size) {
+
+        Pageable pageable = PageRequest.of(page, size);
+        String positionName = position != null ? position.name() : null;
+
+        return playerScoringRepository.findRankedLeaderboard(
+                season,
+                format.name(),
+                format.adpBucket().name(),
+                positionName,
+                active,
+                pageable);
+    }
 }
