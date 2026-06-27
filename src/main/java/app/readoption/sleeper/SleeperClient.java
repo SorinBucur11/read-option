@@ -17,6 +17,9 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * TODO refactor http client to rest client
+ */
 @Component
 public class SleeperClient {
 

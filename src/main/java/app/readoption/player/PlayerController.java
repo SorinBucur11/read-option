@@ -12,19 +12,35 @@ public class PlayerController {
     private final PlayerSyncService syncService;
     private final PlayerRepository playerRepository;
     private final PlayerProfileService playerProfileService;
+    private final PlayerDataSyncService playerDataSyncService;
+    private final PlayerIdMappingService playerIdMappingService;
 
     public PlayerController(PlayerSyncService syncService,
                             PlayerRepository playerRepository,
-                            PlayerProfileService playerProfileService) {
+                            PlayerProfileService playerProfileService,
+                            PlayerDataSyncService playerDataSyncService,
+                            PlayerIdMappingService playerIdMappingService) {
         this.syncService = syncService;
         this.playerRepository = playerRepository;
         this.playerProfileService = playerProfileService;
+        this.playerDataSyncService = playerDataSyncService;
+        this.playerIdMappingService = playerIdMappingService;
     }
 
     @PostMapping("/sync")
     public String syncPlayers() {
         int count = syncService.syncPlayers();
         return "Synced " + count + " players";
+    }
+
+    @PostMapping("/sync-all")
+    public PlayerDataSyncService.PlayerDataSyncResult syncAllPlayers() {
+        return playerDataSyncService.syncAll();
+    }
+
+    @PostMapping("/sync-espn-ids")
+    public PlayerIdMappingService.PlayerIdMappingResult syncEspnIds() {
+        return playerIdMappingService.syncEspnIds();
     }
 
     @GetMapping

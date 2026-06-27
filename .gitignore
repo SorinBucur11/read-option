@@ -1,5 +1,7 @@
 HELP.md
 target/
+src/main/resources/stat_checker/
+src/main/resources/playerids/
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/

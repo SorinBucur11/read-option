@@ -37,6 +37,7 @@ public class Player implements Persistable<String> {
 
     private String status;
     private Boolean active;
+    private String espnId;
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;

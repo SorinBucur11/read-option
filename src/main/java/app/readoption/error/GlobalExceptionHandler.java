@@ -1,5 +1,6 @@
 package app.readoption.error;
 
+import app.readoption.espn.EspnUnavailableException;
 import app.readoption.player.PlayerNotFoundException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
@@ -60,6 +61,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 HttpStatus.INTERNAL_SERVER_ERROR, "An unexpected error occurred");
         pd.setTitle("Internal Server Error");
         pd.setType(URI.create("https://readoption.app/problems/internal-error"));
+        return pd;
+    }
+
+    @ExceptionHandler(EspnUnavailableException.class)
+    public ProblemDetail handleEspnUnavailable(EspnUnavailableException ex) {
+        log.error("Upstream ESPN failure", ex);
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_GATEWAY, ex.getMessage());
+        pd.setTitle("Upstream Provider Unavailable");
+        pd.setType(URI.create("https://readoption.app/problems/upstream-unavailable"));
         return pd;
     }
 
