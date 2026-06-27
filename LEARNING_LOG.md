@@ -1559,6 +1559,7 @@ read-option/src/test/java/app/readoption/
 
 ### Week 5 Status
 - [x] Day 1 — Read-API polish: RFC 9457 error handling (`@RestControllerAdvice` + `ProblemDetail`), `@Min`/`@Max` pagination validation, active-player filter, market-rank window-function overlay (native query + projection interface + real-Postgres test). **Phase 1 closed.**
+- [x] Day 2 — Phase 2 collection layer: `player_projection_raw` (V6, no-FK landing table), player-id mapping (`espn_id` enrichment from DynastyProcess crosswalk, bulk `@Modifying` update), verified ESPN feeder (multiplexed-array selector, numeric stat-id map pinned empirically — INT=20 / FUM=72, two-pt null), upstream 502 handling. Two sources landing in `player_projection_raw`; reconciliation next.
 
 ---
 
@@ -2354,3 +2355,120 @@ spring-ai-playground/
 - H2-vs-Postgres: custom SQL (entity joins, `CASE`, null semantics) can pass on H2 and fail on Postgres — only the real engine test is trustworthy
 - Fixture factory centralizes valid entities because tests bypass the ingestion layer; common case with defaults, edge values inline; `not-null property references a null or transient value` is Hibernate's entity check before INSERT
 - Delegation workflow: own one exemplar of each test shape by hand, hand the repetition to AI tooling with templates + a do-not-test list, review each on a red/green bar (close-read ETL cleansing), full-suite run to prove isolation
+
+
+---
+
+## Phase 2 — Projections Aggregator (IN PROGRESS)
+
+> Collection layer ✅ complete (two sources landing in `player_projection_raw`). Reconciliation layer next.
+
+### Week 5 Day 2 — Collection Layer: Multi-Source Projections (ESPN feeder + player-id mapping)
+**Time:** ~6h
+
+**What I built**
+- **V6 migration**
+  - `player_projection_raw` — per-source projection **landing table**. PK `(player_id, year, source)` (source in the key = the staging grain). **No FK** to `player` (landing table; integrity enforced at the transform step, not on ingest — mirrors the `player_scoring` no-FK decision). Single `adp` + `adp_format` columns (ESPN gives one ADP, not per-format). `source_payload JSONB` for audit/replay.
+  - `player.espn_id` column + `idx_player_espn_id` (the ESPN resolution hot path).
+- **Entities:** `PlayerProjectionRaw` (Persistable upsert, `@Builder.Default isNew`, `@JsonIgnore` on `getId()`/`isNew()`, `Scorable`, `@JdbcTypeCode(SqlTypes.JSON)` on the JSONB field) + `PlayerProjectionRawId` (3-field IdClass).
+- **`PlayerIdMappingService`** — enriches `player.espn_id` from the DynastyProcess `db_playerids.csv` (bundled snapshot in `resources/playerids/`). Streams the CSV with commons-csv, matches only players already in the DB, bulk `@Modifying` JPQL update with an idempotency guard.
+- **`PlayerDataSyncService`** — orchestrator running player sync → id mapping as **two independent transactions** (not nested). Endpoints `/sync-all` (both stages) and `/sync-espn-ids` (mapping only, the dev loop). Original `/sync` (Sleeper-only) kept unchanged.
+- **ESPN feeder stack:** `EspnClient` (Spring `RestClient`, `X-Fantasy-Filter` header), `EspnPlayersResponse` DTOs (`@JsonIgnoreProperties(ignoreUnknown=true)`, `Map<String,Double>` for the numeric-keyed stat map), `EspnStatId` (verified id map), `EspnProjectionMapper` (season-entry selector + stat mapping + ADP + JSONB serialize), `EspnProjectionSyncService` (resolve `espn_id → player_id`, land rows, three-outcome report). Endpoint `/sync/espn` (season-pinned from config).
+- **Error handling:** `EspnUnavailableException` (wraps `RestClientException`) → `GlobalExceptionHandler` → **502 Bad Gateway** (upstream failed, not us), RFC 9457 `ProblemDetail` matching the existing `problems/` URI convention.
+
+**Verified data landed**
+- ESPN feeder: `fetched=400, landed=347, unresolved=39, no-projection=14`. Of 39 unresolved: 32 unmodeled D/ST + kickers + a fullback + 3 rookies that postdate the crosswalk snapshot. **Zero startable skill players.**
+- Gibbs (`9221`): rushing 1373, receptions 68, receiving 547, rec TD 3, small `fumbles_lost`, `two_pt_conv` null, `adp_format='PPR'` — matches the ESPN payload exactly.
+- Mahomes (`4046`): passing 3993, pass TD 26, INT 12, fumbles 3 — confirms the two hardest-won ids (`20`, `72`).
+
+**What I learned — concepts**
+
+- **Landing table → consensus mart (staging→transform→mart).** Raw per-source rows land in `player_projection_raw`; the existing `player_projections` becomes the reconciled mart. Downstream scoring/ranking never changes — multi-source complexity is contained in the reconciliation step.
+  - **Interview line:** *"I kept raw per-source projections in a landing table and the reconciled consensus in a separate mart — staging-and-transform, the same pattern as any ETL pipeline. The payoff is the downstream scoring layer never changed: it still reads one consensus row per player."*
+
+- **Entity resolution / ID crosswalk is MDM.** Each provider keys players by its own id, so multi-source ingestion is an entity-resolution problem before it's a reconciliation problem. Solved with a deterministic crosswalk (DynastyProcess `db_playerids`) enriching `player.espn_id`, a logged review queue for the residual, and **no fuzzy matching**.
+  - **Interview line:** *"Each provider keys players differently, so multi-source ingestion is entity resolution before reconciliation. I persist a deterministic crosswalk to one canonical id rather than fuzzy-match on name — master-data management, one golden record, many source keys — with a logged review queue for the residual."*
+
+- **Verify the field on a real record before committing schema.** My locked "join on Sleeper's `espn_id`" decision was falsified: `espn_id` was null for 44% of skill players, including a top-2 pick (Gibbs). The DynastyProcess crosswalk resolved him correctly and covered 95% of the draftable pool.
+  - **Interview line:** *"I had a locked decision to join on a shared id one provider publishes. A single curl showed it null for 44% of players including a star — a 'done' decision became open again. Verifying external data shape before schema is the cheapest insurance in a pipeline."*
+
+- **Denominator discipline.** A null-`espn_id` count looked alarming and dissolved as the filter tightened toward relevance: 1136 raw → 501 by position → **0** when gated by projected points. The scary number was real; its relevance was not.
+  - **Interview line:** *"I never trust a null-count in isolation — I tighten the filter toward the population that matters until the number holds up or dissolves. A 1,100-player gap went to zero once I gated by startable points. The count tells you how many; the breakdown tells you whether it matters."*
+
+- **`@Modifying` bulk update bypasses the persistence context.** A `@Modifying` JPQL `UPDATE` runs as direct DML — no entity hydration, so `@PreUpdate` never fires. I set `updated_at = CURRENT_TIMESTAMP` inside the query by hand. Right tool for column enrichment over thousands of rows; the gotcha is stale managed entities (not triggered here — only ids were loaded).
+  - **Interview line:** *"A @Modifying JPQL update is direct DML — it skips the persistence context, so lifecycle callbacks like @PreUpdate don't fire and managed entities can go stale. I use it for bulk enrichment and set the audit timestamp in the query by hand, because the callback that normally maintains it is bypassed."*
+
+- **`@JdbcTypeCode(SqlTypes.JSON)` for JSONB.** Hibernate 6 maps arbitrary SQL types this way; for a Postgres `jsonb` column there's no native Java type, so without it Hibernate binds `String` as `varchar` and Postgres rejects it. Modern replacement for a hand-written `UserType` / hypersistence-utils.
+
+- **A real CSV parser, not `split(",")`.** Free-text columns (`college`, `name`) contain quoted commas that silently misalign every later field; commons-csv handles quoting and lets me read by header name (survives column reordering).
+
+- **Bundled snapshot (Option B) over runtime fetch.** A reference table that changes on the NFL calendar, not per request → commit the CSV, read from classpath. Hermetic tests (no network in CI), and "re-commit to refresh" is a reviewed, versioned change.
+
+- **ESPN's multiplexed stats array.** One array per player carries every season × actual/projected × week × split, each a full ~50-key map (≈6,000 lines/player). The feeder's first job is deterministic **entry selection**: `seasonId==2026 && statSourceId==1 && scoringPeriodId==0` (proven unique per player). `appliedTotal` is ignored — we score the raw stats with our own engine.
+
+- **Numeric stat-IDs → canonical fields, pinned empirically.** ESPN keys stats by integer ids (`24`=rush yds, `53`=rec, `42`=rec yds…). Confirmed ids by hand-scoring; pinned the undocumented ones by **triangulation / cross-reference against trusted data**: matched ESPN season-actuals against already-validated rotowire totals, intersecting candidate keys across three players. Found `INTERCEPTIONS=20` (Mahomes 3-INT game), `FUMBLES_LOST=72` (Fields/Nix/Dak intersection; decoy `73` was turnovers = fumbles+INTs, eliminated by arithmetic). `TWO_PT_CONV` left **null on purpose** — no single key or key-pair matched the known 5/4/3 totals across three probes (ESPN splits rush/pass 2pt; my canonical field is a combined total), and a wrong mapping silently corrupts scores.
+  - **Interview line:** *"To pin an undocumented stat id I don't guess harder — I assert a known value and find the key that holds it, intersecting across players so coincidences cancel. A key reading 1 for a one-fumble back and 3 for a three-INT QB is turnovers, not fumbles. And I treated an empty match as signal: when no key or key-pair fit, the source tracks the stat more granularly than mine, so I leave it null rather than overfit — a measurable zero beats a confident wrong mapping."*
+
+- **Exception strategy follows the unit of work.** Read endpoints throw → global handler → `ProblemDetail`. A batch sync over hundreds of players can't throw per row (one bad record kills the run), so per-row outcomes are **collected** into `EspnSyncResult` (landed / unresolved / no-projection). Only a **total upstream failure** is exceptional → `EspnUnavailableException` → **502** (not 500: my server didn't break, my dependency did). `ResponseEntityExceptionHandler` covers the inbound MVC family but not my own outbound `RestClientException`, so the explicit handler is required.
+  - **Interview line:** *"The exception strategy follows the unit of work — a request, or a batch. Per-request errors throw and render as a ProblemDetail; per-row batch outcomes are accumulated into a result report; only a total upstream failure throws, and I map it to 502 so the status honestly says the dependency failed, not my code."*
+
+- **A review queue is only trustworthy when every entry is explainable.** 39 unresolved = 32 unmodeled D/ST + kickers + a fullback + 3 rookies. Zero startable skill players. An *unexplained* name in the queue is the alarm, not the count.
+
+- **NUMERIC over INTEGER for raw stat columns (decided).** Integer rounding (1372.59 → 1373) is fine for scoring one source, but injects noise into the cross-source **points-dispersion** signal reconciliation depends on. Raw stat columns become `NUMERIC` — carried forward as V7, the first step of reconciliation.
+
+**Mistakes & lessons**
+- **Built `EspnClient` on a different HTTP stack than `SleeperClient`** (RestClient vs hand-rolled `java.net.http.HttpClient`) because I was working from pasted fragments, not the repo. Lesson → adopt the **chat-designs / Claude-Code-executes** split: chat for the *why* and architecture, Claude Code for multi-file builds against the whole repo so conventions stay consistent. Standardize *forward* (migrate Sleeper to RestClient later), don't churn tested code mid-feature.
+- **Predicted "a handful" unresolved; got 1099 (35%).** Wrong about the denominator until gated by points. The method, not the effort, fixed it.
+- **`comm` gave a false 100%-missing** on Git Bash (locale sort + CR mismatch). Lesson: **self-test on a known value (Gibbs=1 in both files) before trusting a derived count**; switched to `grep -Fxv`.
+- **First crosswalk decision (`espn_id` primary) was falsified** by the 44% null rate — caught by verifying the field on a real record before writing the migration.
+
+**To revisit**
+- **V7:** `ALTER player_projection_raw ... TYPE NUMERIC` for the stat columns (decided this session; first step of reconciliation).
+- Migrate `SleeperClient` to `RestClient` (standardize forward on the framework idiom).
+- `@Validated @ConfigurationProperties` for `readoption.espn.player-limit` (validate config at the startup boundary, not as a request param).
+- Skip ESPN entries with negative ids / `defaultPositionId==16` (D/ST) before the resolve attempt → quieter review queue.
+- Refresh the crosswalk snapshot post-draft to close the rookie gap.
+- Tests for the Phase 2 collection components (mapper selector + stat mapping; sync services; the id-mapping enrichment).
+- **Reconciliation (next):** land rotowire into `player_projection_raw`; score each source via `ScoringService`; coefficient-of-variation on points → route contested players to the first real Spring AI structured-output verdict call; write consensus to `player_projections`.
+
+---
+
+### Phase 2 — Concepts Cheat-Sheet (additions)
+
+**Data Engineering / ETL**
+- Landing table vs consensus mart: per-source rows (`source` in PK) staged in a raw table, reconciled into a single mart row; downstream consumers read the mart unchanged
+- No FK on a landing table — integrity enforced at the transform step (resolve id, or route to a review queue), not by the DB on ingest; a FK would abort the batch on an unresolved row
+- Entity resolution / crosswalk: deterministic id-to-id map (DynastyProcess `db_playerids`) over fuzzy matching; logged review queue for the residual — MDM, one golden record many source keys
+- Verify external field shape on a real record before committing schema (Sleeper `espn_id` null for 44%); the locked decision was wrong until checked
+- Denominator discipline: tighten the filter toward the relevant population before reading a data-quality number (1136 → 501 → 0)
+- A review queue is only trustworthy when every entry is explainable; an unexplained name is the alarm, not the count
+- Pinning undocumented source codes: assert a known value, find the key that holds it, intersect across multiple entities so coincidences cancel; cross-reference against an already-trusted source as ground truth
+- Empty match = granularity-mismatch signal, not failure (ESPN splits rush/pass 2pt vs a combined canonical field) → sum components, or null a low-impact field rather than overfit
+- Bundled reference snapshot (classpath) vs runtime fetch: hermetic tests + reviewed/versioned refresh for data that changes on a seasonal cadence
+- A real CSV parser over `split(",")`: quoted commas in free-text columns silently misalign every later field; read by header name
+- NUMERIC over INTEGER when small per-source differences feed a downstream dispersion signal — rounding noise corrupts the routing decision
+
+**JPA / Hibernate**
+- `@Modifying` JPQL `UPDATE` = direct DML: skips the persistence context, `@PreUpdate` doesn't fire (set `updated_at` in the query), managed entities can go stale (`clearAutomatically=true` if any were loaded)
+- Idempotent bulk update via a guard clause (`WHERE espn_id IS NULL OR espn_id <> :v`) → re-run touches only genuinely-changed rows; returned count means "actually changed"
+- `@JdbcTypeCode(SqlTypes.JSON)` + `columnDefinition="jsonb"` for a Postgres JSONB column (no native Java type; replaces a hand-written `UserType`)
+- Derived query (`findByEspnId`) for an indexed single-column lookup — no `@Query` needed
+- Persistable upsert scoped per source: load existing keys for `(year, source)`, `markExisting()` so re-run UPDATEs instead of duplicating
+
+**HTTP Clients / Spring**
+- `RestClient` (Spring 6.1+, successor to `RestTemplate`): fluent `get().uri().header().retrieve().body(Type.class)`, deserialization via message converters; custom header (`X-Fantasy-Filter`) is one `.header()` call
+- A provider taking its query as a JSON **header** (ESPN) instead of params; `limit` requires an accompanying `sort` — verified empirically, not from docs
+- Two HTTP clients on different stacks (hand-rolled `java.net.http.HttpClient` vs `RestClient`) is a consistency smell in a CV codebase → standardize forward, not by churning tested code mid-feature
+- `@JsonIgnoreProperties(ignoreUnknown=true)` on large third-party DTOs — model only consumed fields; deserialization survives the provider adding fields
+- JSON keys that are *data* (ESPN numeric stat ids) → bind to `Map<String,Double>` and translate in code; a fixed DTO can't represent dynamic keys
+
+**Error Handling**
+- Exception strategy follows the unit of work: per-request → throw → `ProblemDetail`; per-row batch → collect outcomes into a result record; total upstream failure → throw
+- Upstream dependency failure → **502 Bad Gateway**, not 500 — your server didn't break, the dependency did; returning 500 sends a debugger to the wrong codebase
+- `ResponseEntityExceptionHandler` covers the inbound MVC exception family but **not** your own outbound `RestClientException` — wrap it in a domain exception and handle explicitly
+- Request-param validation (`@Min`/`@Max` at the controller, untrusted input) vs config validation (`@Validated @ConfigurationProperties`, at startup) — validate at the boundary the input crosses
+
+**Workflow / Tooling**
+- Chat works from pasted snapshots; the repo is the truth. Once a codebase grows cross-cutting conventions, chat-as-builder becomes a source of inconsistency
+- Split: **chat designs** (the why, architecture, interview framing — the CV-bearing understanding) / **Claude Code executes** (multi-file builds with whole-repo context so conventions hold) / **IntelliJ** (edit, run, psql-verify, read diffs)
+- Keep owning the load-bearing logic and the review; delegate scaffolding — don't delegate the understanding
