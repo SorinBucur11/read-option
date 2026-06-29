@@ -399,11 +399,11 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 
 | Concept | Phase |
 |---------|-------|
-| Structured output | ✅ Done (Week 2 Day 4) |
+| Structured output | ✅ Done (Week 2 Day 4; reused Phase 2 — `BeanOutputConverter` verdict classification) |
 | System prompts | ✅ Done (Week 2 Day 5) |
 | Context management | Phase 2+ (when prompts get large with player data) |
 | Conversation memory | Phase 3 (multi-turn draft conversations) |
-| RAG (SQL-based) | Phase 2–3 (query player stats, inject into prompt) |
+| RAG (SQL-based) | ✅ Done (Phase 2 — recent actuals retrieved from `player_stats`, injected into the verdict prompt to ground role disagreements) |
 | RAG (vector-based) | Phase 3+ (scouting reports, articles) |
 | Embeddings + pgvector | Phase 3 |
 | Few-shot prompting | Phase 2+ (consistent classification/ranking) |
@@ -2472,3 +2472,152 @@ spring-ai-playground/
 - Chat works from pasted snapshots; the repo is the truth. Once a codebase grows cross-cutting conventions, chat-as-builder becomes a source of inconsistency
 - Split: **chat designs** (the why, architecture, interview framing — the CV-bearing understanding) / **Claude Code executes** (multi-file builds with whole-repo context so conventions hold) / **IntelliJ** (edit, run, psql-verify, read diffs)
 - Keep owning the load-bearing logic and the review; delegate scaffolding — don't delegate the understanding
+
+---
+
+## Phase 2 (continued) — Reconciliation Layer
+
+The first real LLM work in the project: projections from two providers (rotowire via Sleeper, ESPN) reconciled into a single consensus mart, with an LLM classifying the genuine disagreements. The headline lesson is at the very end, and it's the one I'll tell in interviews: the first verdict run **worked structurally and failed substantively** — it ran 128 model calls clean and flagged 94% of them as "uncertain" — and the fix was *retrieval*, not a cleverer prompt.
+
+**What I did**
+- **Migrations:** V7 (raw stat columns `INTEGER → NUMERIC(7,2)`), V8 (mart stat columns `→ NUMERIC(7,2)`), V9 (`player_projection_reconciliation` audit table, no FK).
+- **Scoring contract:** widened `StatLine`'s getters from `Integer` to `Number` so genuinely-integer historical `PlayerStats` and now-`BigDecimal` projection entities both satisfy one contract via covariant returns; `ScoringService` narrows to `BigDecimal` internally.
+- **Staging retrofit:** rotowire now lands in `player_projection_raw` (it used to write straight to the mart — the Phase 1 single-source shortcut). After this, **reconciliation is the only writer of `player_projections`.**
+- **Option A engine:** `DispersionCalculator` + `ConsensusBuilder` (pure, no Spring), `VerdictClassifier` (`ChatClient` + `BeanOutputConverter<Verdict>`), `ReconciliationService` (phased READ → REASON → WRITE → RE-SCORE), `ReconciliationWriter` (separate `@Transactional` bean), config in `@Validated ReconcileProperties`.
+- **Calibration:** a `?dryRun=true` mode returns the CV distribution; used it to set the threshold (0.10) against the real bimodal shape instead of guessing.
+- **First verdict run:** 310 two-source players, 128 contested at 0.10 — **120 `FLAG_UNCERTAIN`, 7 `FAVOR_LOW`, 1 `TRUST_CONSENSUS`.**
+- **Diagnosed it, built RAG increment 1:** `PriorSeasonContextRetriever` injects the player's last 3 seasons of actuals into the verdict prompt; moved the system-prompt honesty boundary to match.
+- **Re-ran:** **53 flag / 48 favor-low / 22 favor-high / 5 trust** — a discriminating, bidirectional distribution, with rationales now citing the injected actuals.
+- **Feeder parity:** `source_payload` populated on rotowire (scoped to the typed object mapped from), ESPN `games_played=17` and `team` from the resolved player, duplicate-`interceptions` cleanup.
+
+**What I learned**
+
+- **Grain = what one row means = the PK.** Stating the grain out loud before modelling is the discipline I already did implicitly when choosing keys. The landing table's grain is one row per source per player-season; the mart's is one row per player-season after reconciliation.
+  - **Interview line:** *"Before I model a table I state its grain — what one row represents — and the primary key enforces it. The landing grain is one row per source per player-season; the mart grain is one row per player-season after reconciliation. Getting the grain wrong is how you double-count or silently drop rows downstream."*
+
+- **A mart is the published, query-ready table; staging is the raw landing zone.** Adding the second source didn't add data, it forced a staging layer — and demoted the mart from a load target to a transform output. Phase 1 got away with loading straight to the mart only because one source meant nothing to reconcile.
+  - **Interview line:** *"Adding the second source forced a staging layer and turned the mart into a transform output. Source feeds land raw, business rules produce the golden record, consumers read the clean mart — the same discipline as not loading raw feeds into a reporting mart."*
+
+- **The grain dictates how every other per-format attribute is modelled.** Scoring format shows up three ways in this schema, each correct: points are *deepened into rows* (vary by format, queried by format), the stat line has *no format* (format-invariant), ADP is *widened into columns* (the row's grain left nowhere to deepen it).
+  - **Interview line:** *"Format appears three ways and each is deliberate: points deepened into rows because they vary by format, the stat line format-less because stats are format-invariant, ADP widened into columns because the grain was already one-per-player-season. The grain decision dictates how the format-varying attributes around it get modelled."*
+
+- **Option A — the LLM classifies, the engine applies the verdict as a selection rule over stat lines already in hand.** The model returns an enum (`TRUST_CONSENSUS` / `FAVOR_HIGH` / `FAVOR_LOW` / `FLAG_UNCERTAIN`); the engine writes a real source's line or a per-stat median. Every number in the mart traces to a real source or a median of real sources — the model never emits a stat or a point.
+  - **Interview line:** *"The LLM classifies; it never computes. On a contested player it returns an enum, and the deterministic engine applies that as a selection rule over stat lines I already have. Every projected number traces back to a real source or a median of real sources, so the output stays reproducible and auditable even where a model was in the loop."*
+
+- **Coefficient of variation, not raw spread, for the dispersion signal.** Variance scales with magnitude — a 10-point gap is noise on a 300-point QB and a fork on a 40-point TE — so I normalize by the mean to make disagreement comparable across the pool. Population std dev (I have all the sources, not a sample); at n=2 the CV collapses to `|a−b|/(a+b)` and the "median" is the midpoint, with real robustness arriving at n=3.
+  - **Interview line:** *"I route on coefficient of variation, not raw spread, because variance scales with magnitude — a ten-point gap is noise on a 300-point quarterback and a real fork on a 40-point tight end. Normalizing by the mean makes one threshold mean the same thing everywhere."*
+
+- **Guard the mean before dividing, and let the floor do double duty.** A points floor applied before the CV skips non-draftable players — which kills the μ→0 divide-by-zero *and* bounds the contested subset, which bounds the LLM call count, which bounds cost.
+
+- **Calibrate the threshold against the real distribution, not a round number.** The dry-run showed a bimodal shape — a mass under 0.10 (sources agree), a pile at 0.20+ (sources see different players), a thin valley between. I set the threshold at the front of the valley so the genuinely-ambiguous middle gets judgment instead of a blind median.
+
+- **The measuring stick is a *detector*, not an output format.** I score each source in one format only to measure spread, then throw the number away; the output is a format-invariant stat line. PPR dominates Standard as a detector because PPR points = Standard points + receptions, so Standard alone has a reception-shaped blind spot on contested target-share players.
+  - **Interview line:** *"The format I measure disagreement in is a detector, not an output — I score in it only to measure spread, then discard the number. PPR sees every disagreement Standard sees plus reception disagreements, so it's the more sensitive detector; the reconciled stat line is format-invariant and serves every format downstream."*
+
+- **`BeanOutputConverter` is the framework version of the Phase 0 hand-rolled JSON.** It generates format instructions from the record and parses the model's text back into the typed `Verdict`. Structured output is best-effort, not guaranteed — the model can emit an out-of-enum value or extra prose and the parse can throw — so I wrap it and fall back to `TRUST_CONSENSUS`. Confidence is an *enum*, not a double: a double is a fake number that implies a calibration the model doesn't have.
+  - **Interview line:** *"BeanOutputConverter generates the format spec from my record and parses the response back into it — the boilerplate I hand-wrote in Phase 0. But structured output is best-effort, not a guarantee: the schema shapes the model, it doesn't constrain it like a compiler, so I wrap the parse and fall back. And I made confidence an enum, not a double, to keep the model classifying rather than faking precision."*
+
+- **Feed the model the per-stat breakdown so it classifies disagreement *shape*, not magnitude.** Asking it to pick the bigger number is a coin flip in a lanyard. Given the breakdown it can reason: a touchdown-driven gap is fragile and regresses; a volume/role-driven gap is structural. And I stated the limit honestly — without news/depth-chart context it reasons about shape, not omniscience.
+
+- **Never hold a DB transaction across an external (model) call.** A transaction pins a pooled connection for its whole lifetime; wrapping slow model calls in one is a long-running-transaction anti-pattern. I phased it: READ → REASON (model calls, no transaction) → WRITE (bounded txn) → RE-SCORE. The 12-minute run proved it: 12 minutes of model calls holding nothing, then a 4-second atomic write burst.
+  - **Interview line:** *"The run spent twelve minutes reasoning and four seconds writing, and that ratio is the point of the phasing. All the slow, failure-prone model calls happened with no transaction open and nothing committed; the database work was a four-second atomic burst at the end. A batch that's 99% slow external calls must never hold a transaction across the slow part — and the phasing also made the whole run killable with zero partial state."*
+
+- **The write and its derived recompute are one unit of work.** Reconciliation rewrites the mart, which leaves `player_scoring` stale for the touched players — so the endpoint chains a re-score of exactly that subset. One call leaves both tables consistent instead of a documented two-step trap.
+
+- **One scoring contract over two storage types via covariant returns.** Widening `StatLine` to `Number` lets the integer-backed historical entity stay honest about being integer while projections are honestly `BigDecimal`; they unify at the scoring boundary. **Precision lives in the narrowing:** `new BigDecimal(n.toString())`, never `doubleValue()`, or the V7/V8 NUMERIC work leaks straight back out through a binary float.
+  - **Interview line:** *"Two entities needed one scoring contract but stored numbers differently — historical stats are genuinely integer, projections are decimal. I widened the interface to their common supertype, Number, and narrowed to BigDecimal at the scoring boundary, so I never had to decimalize honest integer history just to fit the interface. And the narrowing has to go through the string form, or the NUMERIC columns I migrated to are undone by a float round-trip."*
+
+- **The audit table is an anti-theater surface.** `player_projection_reconciliation` records cv / route / verdict / confidence / rationale / model — so I can answer "why is this projection what it is," and, crucially, *read the rationales to check the model reasoned over the breakdown rather than performing.*
+
+- **The LLM call is 3–4 orders of magnitude slower than everything else, so latency moved.** My engine scores thousands of players in milliseconds; one model round-trip is seconds. The moment a model enters a loop, total time is purely a function of how many serial calls I make. The verdict calls are embarrassingly parallel, so the fix is bounded concurrency — but concurrency and rate-limit handling are one problem, not two (parallelize and you hit the provider's RPM ceiling and need 429 backoff).
+  - **Interview line:** *"The first time I put a model call in a loop I learned latency had moved — my engine scores thousands of players in milliseconds, one model round-trip is seconds, so total time became purely how many serial calls I made. The calls are embarrassingly parallel, so the fix is bounded concurrency — but the bound isn't 'as many as possible,' it's 'as many as the rate limit allows,' so concurrency and 429 backoff are the same chapter."*
+
+- **Route a change to the tool by blast radius, not line count.** A one-line fix that must stay consistent with conventions across files belongs in Claude Code (it reads them all); a self-contained pure function could be chat regardless of size.
+
+- **An audit payload is scoped to the decision it supports, not a mirror of the wire.** ESPN's full record is ~5,000 lines I'd never replay; I store the *typed object I mapped from* (the scoped node) on both feeders. Lossless mirroring is right for a raw event log, wrong for a bounded landing row. And I keep the payload because the source is *mutable* — projections revise through the season — so the audit has to pin what the verdict was computed from at decision time, which re-fetching can't give me.
+  - **Interview line:** *"The audit payload stores the typed object the mapper mapped from — the scoped projection node, not the raw response. The raw record is thousands of lines I'd never replay; the scoped node is exactly what the verdict was computed from, which is what an audit has to pin since the source revises through the season. 'I can always re-fetch' is false for a mutable source."*
+
+- **ADP is observed market fact; the stat line is projected production — different authorities on the same row.** ADP must never follow the reconciliation verdict (favoring ESPN's *projection* says nothing about whose *draft-position sample* is better), and one format's ADP is never derivable from another's (Derrick Henry: 24.3 Standard, 34.5 PPR — the offset is player-specific). The mart's three ADP columns are copied verbatim from the source that reports all formats, regardless of which projection won.
+  - **Interview line:** *"A row sourced part-ESPN, part-Sleeper isn't incoherent — it's attributing each field to its best source. The verdict judges projected production; ADP is an observed market fact about where people actually draft. One source being more accurate on touchdowns says nothing about whose draft-position sample is better, so ADP never follows the verdict, and per-format ADP is never derived from another format because the offset is player-specific."*
+
+- **THE CHAPTER'S LESSON — the first verdict run flagged 94%, and the fix was retrieval, not a better prompt.** 120 of 128 came back `FLAG_UNCERTAIN`. My first read was "the model can't commit" and my first instinct was "make commitment the default" — **both wrong.** Reading the 7 commit-cases corrected me: the model committed confidently every time, but always by invoking the player's real depth-chart role — knowledge from its *training*, not my prompt. The 120 flags weren't risk-aversion; they were the model honestly hitting the boundary I'd written ("judge from the stat breakdown alone") on role disagreements that can't be settled from the disputed numbers. So I gave it the missing context — prior-season actuals, retrieved from my own `player_stats` (which *is* RAG, with a SQL query as the retriever) — and moved the honesty boundary to match: flag what's unadjudicable *even with history*. Re-run: 94% → 41% flags, bidirectional, rationales now citing the injected actuals. Rodgers flipped FLAG → FAVOR_HIGH with *"recent actuals (3322 in 2025, 3897 in 2024) strongly support the higher projection"* — the verdict provably changed *on the retrieved fact*. **This is the empirical proof of my Phase 0 note** (*"structure without grounding is just well-formatted hallucination"*): the 94%-flag run had perfect structured output — 128 clean parses, zero failures — and useless content. Grounding fixed it; structure never could.
+  - **Interview line:** *"My first verdict run flagged 94% of contested players, and the fix wasn't a more aggressive prompt — it was retrieval. The model was abstaining honestly because I'd told it to judge from the projections alone, and a role disagreement can't be settled from the disputed numbers themselves. So I built the first RAG increment — retrieve the player's recent actual production from my own database, inject it as a baseline, and move the 'uncertain' boundary to mean 'unadjudicable even with history.' Abstention dropped from 94% to 41%, the recovered verdicts split in both directions — which is what tells me it's discriminating, not bullied — and one player flipped from uncertain to a confident call citing the specific actual that moved it. I expanded the model's information rather than pressuring its judgment."*
+
+- **`FLAG_UNCERTAIN` is a feature, not a dodge — and a flag that *reasons through the history first* is the best outcome.** On Rodriguez (thin NFL history) the re-run stayed flagged, but now *because* the model pulled his actuals, found his 15-reception projection was "a role he has never held," resolved some dimensions and found the rest genuinely unsettled. Reasoning *to* uncertainty beats abstaining by default — and it caught a receiving-role detail I'd underweighted in my own pre-registration.
+  - **Interview line:** *"The most valuable verdict isn't 'favor this source,' it's correctly recognizing the unpickable cases — and the best version reasons through the player's history first and then concludes uncertain, rather than abstaining by default. If I can't adjudicate it with more context than the model has, the model shouldn't pretend it can."*
+
+- **Pre-registration is how you tell judgment from theater.** I predicted three players' verdicts from my own football reasoning *before* the model saw them, then checked whether the rationales cited the specific stat breakdown or generic boilerplate. The model matched all three and out-analyzed me on one — that's the blind test that says it's reasoning, not performing.
+
+**Mistakes & lessons**
+- **I misdiagnosed the 94% abstention and my first fix would have made it worse.** I read it as "can't commit → force commitment." The 7 commit-cases showed the opposite: it commits well when it has role knowledge and flags honestly when it doesn't. Lesson → **read the commit cases before diagnosing the abstentions.** Forcing commitment on a structurally-unadjudicable disagreement produces fabrication, not judgment.
+- **`source_payload` shipped null under a green test suite** — the test asserted the columns I'd thought about and stayed silent on the one that was a stated requirement. A test only defends what it asserts.
+- **Almost bundled the `SleeperClient` → RestClient migration into a null-column fix.** Caught it: a correctness fix and a standardization refactor justify themselves differently and belong in separate commits.
+- **Talked the design down twice (RestClient, then lossless capture) and each time the smaller option was the more correct one.** The tell both times: the "more thorough" option was faithful to data the decision doesn't depend on.
+- **Twelve-minute run scared me into reaching for the kill switch** — it wasn't a hang, just 128 serial model calls at ~5.6s each. Lesson → expect LLM-in-a-loop latency; the phasing meant a kill would have cost time, not data.
+
+**To revisit**
+- **Concurrency + rate limits:** bounded parallelism (~8 in flight) with 429 backoff to take the verdict run from ~12 min toward ~90 s. Concurrency and rate-limit handling are one design pass.
+- **Per-format ADP into the mart (designed, not built):** drop raw `adp`/`adp_format`, add three `adp_*` columns sourced from Sleeper (all three present in the payload); the writer copies them verbatim from the rotowire raw row — never derived, never following the verdict.
+- **JSONB `source_payload` round-trip test:** currently asserted at the mapper level only; the persistence path (through `@JdbcTypeCode(SqlTypes.JSON)` and the real column) is unasserted — add one `@DataJpaTest`.
+- **`PlayerControllerTest` `@MockitoBean` one-liner** (pre-existing red, out of the reconciliation scope; land as its own commit).
+- **RAG increment 2 if the re-run plateaus:** ADP and depth-chart/role context as additional retrievers behind the same seam; extract a `ContextRetriever` interface when retriever #2 lands (not before).
+- **`SleeperClient` → RestClient** (still deferred; no longer entangled with anything).
+
+**Confirmed this chapter (was open):**
+- **The `BigDecimal` narrowing is honest** — confirmed by a player whose engine score *deliberately disagreed* with the source's own total: rotowire scores interceptions at −1, my league at −2, so Rodgers' total differs by design. That mismatch is the proof the engine re-scores from raw stats under my rules and isn't reading the source's pre-computed `appliedTotal` — i.e. the dispersion signal measures *production* disagreement, not *scoring-formula* disagreement.
+  - **Interview line:** *"I confirmed my dispersion signal was honest by finding a player where my engine's total deliberately disagreed with the source's own — the source scores interceptions at −1, my league at −2. If the numbers had matched I'd have been measuring scoring-formula disagreement instead of production disagreement, the wrong thing entirely."*
+
+---
+
+### Phase 2 Reconciliation — Concepts Cheat-Sheet (additions)
+
+**Spring AI / LLM integration**
+- `BeanOutputConverter<T>` generates format instructions from a record and parses the response back into it — the framework version of hand-rolled "respond in JSON" + manual parse
+- Structured output is best-effort, not enforced: wrap the parse, fall back on out-of-enum / malformed; the schema shapes the model, it doesn't constrain it like a compiler
+- Model output should be an enum (classification), not a number — a `confidence` double is fake precision the model can't calibrate
+- System prompt in config (`@ConfigurationProperties`), not a `static final` — prompt iteration becomes edit-and-restart, not recompile
+- `ChatClient.Builder` → `defaultSystem(...)`; per-call model override via `AnthropicChatOptions.builder().model(...)`
+- LLM latency is 3–4 orders of magnitude above DB/compute; once a call is in a loop, runtime = (serial call count × per-call latency); independent calls are embarrassingly parallel
+- Bounded concurrency + 429 backoff are one design problem — the parallelism bound is the rate limit, not the core count
+
+**RAG (retrieval-augmented generation)**
+- RAG = retrieve relevant context from your store, inject into the prompt, let the model reason over it — a SQL query over your own tables is a legitimate retriever (vector search is one retriever, not the definition)
+- A model invoking facts from its *training* (depth charts, roles) is unauditable and can be stale; *retrieving* the same facts makes the reasoning grounded and auditable
+- Expand the model's information, don't pressure its judgment: if it abstains, ask what context it's missing before rewriting the prompt to be more aggressive
+- Empty retrieval is signal, not omission ("no prior NFL production" *explains* why a rookie legitimately flags)
+- Build the retrieval seam as a concrete class with one implementation; extract the interface when retriever #2 arrives (YAGNI on the abstraction, deliberate on the seam shape)
+- Batch the retrieval — N independent model calls must not also become N per-row context queries
+
+**Reconciliation / dispersion**
+- Coefficient of variation (σ/μ) normalizes disagreement across magnitudes so one threshold means the same thing pool-wide; raw std dev secretly scales with player size
+- Population std dev (all sources, not a sample); at n=2 CV = `|a−b|/(a+b)` and median = midpoint; robustness arrives at n=3
+- Points floor before CV: guards μ→0 *and* bounds the contested subset (= bounds model cost)
+- Calibrate the threshold against the real (often bimodal) distribution via a dry-run, not a round number; set it in the valley between agreement and violent disagreement
+- The scoring format used for routing is a *detector*, not an output — score to measure spread, discard the number; output a format-invariant stat line
+- PPR ⊇ Standard as a disagreement detector (PPR = Standard + receptions)
+- The model classifies disagreement *shape* (TD-driven = fragile/regresses; volume/role = structural) from the per-stat breakdown — never picks "the bigger number"
+- Verdict = selection rule over real stat lines (a source's line or a per-stat median); the engine writes the number, the model never emits one
+- Pre-register expected verdicts from your own reasoning, then check rationales cite the breakdown vs. generic boilerplate — the blind test for judgment vs. theater
+
+**Transactions & batch shape**
+- Never hold a DB transaction across an external (model/HTTP) call — it pins a pooled connection for the call's whole duration (long-running-transaction anti-pattern)
+- Phase it: READ → REASON (external calls, no txn) → WRITE (bounded txn) → derived recompute; the write phase running only after reasoning completes also makes the batch killable with zero partial state
+- A write and its derived recompute (mart → scoring) are one unit of work — chain them so one call leaves both tables consistent
+- Per-row resilience in a batch: one failed model call falls back to the safe verdict and is recorded; it never aborts the run
+
+**Audit & provenance**
+- An audit payload is scoped to the *decision* it supports, not a mirror of the wire — store the typed object you mapped from, not the 5,000-line raw record
+- Keep the stored payload (don't "just re-fetch") when the source is *mutable* — the audit must pin what the decision was computed from at decision time
+- A mart row can carry two provenances honestly: a reconciled estimate (stat line) and an observed fact (ADP) — different authorities, different sources, same row
+- ADP never follows the reconciliation verdict; per-format ADP is never derived from another format (the offset is player-specific)
+
+**Scoring contract / precision**
+- Widen a shared interface to the common supertype (`Number`) so two entities with different honest storage types (`Integer` history, `BigDecimal` projections) satisfy one contract via covariant returns — don't decimalize honest integer data to fit the interface
+- Precision lives in the narrowing: `new BigDecimal(n.toString())`, never `doubleValue()` — a float round-trip undoes NUMERIC storage
+- Confirm the engine re-scores from raw stats (not the source's pre-computed total) by finding a player whose score *deliberately* differs from the source's own — a scoring-rule mismatch is the proof
+
+**Workflow (additions)**
+- Route a fix to chat vs. Claude Code by **blast radius** (how many files must stay consistent), not line count
+- Keep a correctness fix and a standardization refactor in separate commits — different justifications, independent reverts
+- The verdict-run iteration loop *is* the job: ship, measure the distribution, diagnose, fix the *information*, re-measure — the first run is rarely the right run
+- Disable Claude Code's `Co-Authored-By` trailer via `attribution: { commit: "", pr: "" }` in `~/.claude/settings.json` (user-global) — authorship reflects the real division of labor (own the design/review, delegate the scaffolding)
