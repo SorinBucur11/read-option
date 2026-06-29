@@ -13,6 +13,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -63,6 +65,43 @@ public class PlayerScoringService {
         }
 
         return scoreAndSave(lines, season, source);
+    }
+
+    /**
+     * Re-score only the given players for a season, routing by the same season
+     * boundary as {@link #computeAndSaveForSeason}. Used after reconciliation rewrites
+     * a subset of the mart — keeps player_scoring consistent without re-scoring the
+     * whole table. Its own transaction (separate bean from the reconciliation
+     * orchestrator), so the proxy applies and no model call is held inside it.
+     */
+    @Transactional
+    public int computeAndSaveForPlayers(int season, Collection<String> playerIds) {
+        if (playerIds == null || playerIds.isEmpty()) {
+            return 0;
+        }
+        Set<String> ids = new HashSet<>(playerIds);
+
+        List<? extends Scorable> lines;
+        String source;
+        if (season < currentSeason) {
+            lines = playerStatsRepository.findByYear(season);
+            source = "stat lines";
+        } else {
+            lines = playerProjectionRepository.findByYear(season);
+            source = "projections";
+        }
+
+        List<? extends Scorable> touched = lines.stream()
+                .filter(l -> ids.contains(l.getPlayerId()))
+                .toList();
+
+        if (touched.isEmpty()) {
+            log.warn("Re-score: no {} found for {} touched players in season {}",
+                    source, ids.size(), season);
+            return 0;
+        }
+
+        return scoreAndSave(touched, season, source);
     }
 
     @Transactional

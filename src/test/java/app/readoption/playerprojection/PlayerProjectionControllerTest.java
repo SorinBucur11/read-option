@@ -20,13 +20,14 @@ class PlayerProjectionControllerTest {
 
     @Autowired private MockMvc mockMvc;
 
-    @MockitoBean private PlayerProjectionSyncService syncService;
+    @MockitoBean private RotowireProjectionSyncService rotowireSyncService;
+    @MockitoBean private EspnProjectionSyncService espnProjectionSyncService;
     @MockitoBean private PlayerProjectionRepository playerProjectionRepository;
 
     @Test
     @DisplayName("POST /api/projections/sync/{season} returns 200")
     void syncReturnsOk() throws Exception {
-        when(syncService.syncProjections(2026)).thenReturn(150);
+        when(rotowireSyncService.sync(2026)).thenReturn(150);
 
         mockMvc.perform(post("/api/projections/sync/2026"))
                 .andExpect(status().isOk());

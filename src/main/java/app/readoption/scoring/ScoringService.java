@@ -71,10 +71,15 @@ public class ScoringService {
         return totalPoints.divide(BigDecimal.valueOf(gamesPlayed), SCALE, ROUNDING);
     }
 
-    private BigDecimal points(Integer statValue, BigDecimal multiplier) {
+    private BigDecimal points(Number statValue, BigDecimal multiplier) {
         if (statValue == null) {
             return BigDecimal.ZERO;
         }
-        return BigDecimal.valueOf(statValue).multiply(multiplier);
+        // Narrow to BigDecimal without going through double, so a fractional
+        // projection (e.g. 250.70 receiving yards) keeps its exact value.
+        BigDecimal value = statValue instanceof BigDecimal bd
+                ? bd
+                : new BigDecimal(statValue.toString());
+        return value.multiply(multiplier);
     }
 }

@@ -17,6 +17,8 @@ public class EspnProjectionMapper {
     public static final String SOURCE = "espn";
     public static final String ADP_FORMAT = "PPR";   // leaguedefaults/3 is PPR scoring
 
+    private static final int SEASON_GAMES = 17;   // mirror rotowire; a season projection means a full season
+
     private final ObjectMapper objectMapper;
 
     public EspnProjectionMapper(ObjectMapper objectMapper) {
@@ -24,7 +26,7 @@ public class EspnProjectionMapper {
     }
 
     /** Empty if ESPN has no season-total projection for this player/season. */
-    public Optional<PlayerProjectionRaw> toRaw(String playerId, int season,
+    public Optional<PlayerProjectionRaw> toRaw(String playerId, int season, String team,
                                                EspnPlayersResponse.Player espnPlayer) {
         Optional<EspnPlayersResponse.StatEntry> seasonEntry = selectSeasonProjection(espnPlayer, season);
         if (seasonEntry.isEmpty()) {
@@ -37,16 +39,17 @@ public class EspnProjectionMapper {
                 .playerId(playerId)
                 .year(season)
                 .source(SOURCE)
-                .passingYards(intStat(stats, EspnStatId.PASSING_YARDS))
-                .passingTd(intStat(stats, EspnStatId.PASSING_TD))
-                .interceptions(intStat(stats, EspnStatId.INTERCEPTIONS))
-                .rushingYards(intStat(stats, EspnStatId.RUSHING_YARDS))
-                .rushingTd(intStat(stats, EspnStatId.RUSHING_TD))
-                .receptions(intStat(stats, EspnStatId.RECEPTIONS))
-                .receivingYards(intStat(stats, EspnStatId.RECEIVING_YARDS))
-                .receivingTd(intStat(stats, EspnStatId.RECEIVING_TD))
-                .interceptions(intStat(stats, EspnStatId.INTERCEPTIONS))
-                .fumblesLost(intStat(stats, EspnStatId.FUMBLES_LOST))
+                .team(team)
+                .gamesPlayed(SEASON_GAMES)
+                .passingYards(decimalStat(stats, EspnStatId.PASSING_YARDS))
+                .passingTd(decimalStat(stats, EspnStatId.PASSING_TD))
+                .interceptions(decimalStat(stats, EspnStatId.INTERCEPTIONS))
+                .rushingYards(decimalStat(stats, EspnStatId.RUSHING_YARDS))
+                .rushingTd(decimalStat(stats, EspnStatId.RUSHING_TD))
+                .receptions(decimalStat(stats, EspnStatId.RECEPTIONS))
+                .receivingYards(decimalStat(stats, EspnStatId.RECEIVING_YARDS))
+                .receivingTd(decimalStat(stats, EspnStatId.RECEIVING_TD))
+                .fumblesLost(decimalStat(stats, EspnStatId.FUMBLES_LOST))
                 .twoPtConv(null)   // ESPN two-pt not reliably mappable; see EspnStatId
                 .adp(adp(espnPlayer))
                 .adpFormat(ADP_FORMAT)
@@ -67,9 +70,12 @@ public class EspnProjectionMapper {
                 .findFirst();
     }
 
-    private Integer intStat(Map<String, Double> stats, String id) {
+    private BigDecimal decimalStat(Map<String, Double> stats, String id) {
         Double v = stats.get(id);
-        return v == null ? null : (int) Math.round(v);   // round fractional projection to int
+        // Preserve the fractional projection (NUMERIC(7,2) since V7): rounding here
+        // would inject noise into the cross-source dispersion signal. BigDecimal.valueOf,
+        // not new BigDecimal(double), to avoid binary-float artifacts.
+        return v == null ? null : BigDecimal.valueOf(v).setScale(2, RoundingMode.HALF_UP);
     }
 
     private BigDecimal adp(EspnPlayersResponse.Player player) {

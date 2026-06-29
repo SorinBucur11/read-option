@@ -61,7 +61,8 @@ public class EspnProjectionSyncService {
                 continue;
             }
 
-            Optional<PlayerProjectionRaw> row = mapper.toRaw(player.get().getId(), season, ep);
+            Optional<PlayerProjectionRaw> row =
+                    mapper.toRaw(player.get().getId(), season, player.get().getTeam(), ep);
             if (row.isEmpty()) {
                 noProjection++;       // ESPN player with no 2026 season projection (e.g. K/DST)
                 continue;

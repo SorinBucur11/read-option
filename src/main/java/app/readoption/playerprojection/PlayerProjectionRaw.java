@@ -35,16 +35,19 @@ public class PlayerProjectionRaw implements Persistable<PlayerProjectionRawId>, 
     private String team;
     private Integer gamesPlayed;
 
-    private Integer passingYards;
-    private Integer passingTd;
-    private Integer interceptions;
-    private Integer rushingYards;
-    private Integer rushingTd;
-    private Integer receptions;
-    private Integer receivingYards;
-    private Integer receivingTd;
-    private Integer fumblesLost;
-    private Integer twoPtConv;
+    // NUMERIC(7,2) since V7: the landing table preserves each source's fractional
+    // projection exactly, so integer rounding never injects noise into the
+    // cross-source dispersion signal. games_played stays Integer (a game count).
+    private BigDecimal passingYards;
+    private BigDecimal passingTd;
+    private BigDecimal interceptions;
+    private BigDecimal rushingYards;
+    private BigDecimal rushingTd;
+    private BigDecimal receptions;
+    private BigDecimal receivingYards;
+    private BigDecimal receivingTd;
+    private BigDecimal fumblesLost;
+    private BigDecimal twoPtConv;
 
     private BigDecimal adp;
     private String adpFormat;

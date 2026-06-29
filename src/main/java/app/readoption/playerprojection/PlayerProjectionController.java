@@ -8,22 +8,24 @@ import java.util.List;
 @RequestMapping("/api/projections")
 public class PlayerProjectionController {
 
-    private final PlayerProjectionSyncService syncService;
+    private final RotowireProjectionSyncService rotowireSyncService;
     private final EspnProjectionSyncService espnProjectionSyncService;
     private final PlayerProjectionRepository playerProjectionRepository;
 
-    public PlayerProjectionController(PlayerProjectionSyncService syncService,
+    public PlayerProjectionController(RotowireProjectionSyncService rotowireSyncService,
                                       EspnProjectionSyncService espnProjectionSyncService,
                                       PlayerProjectionRepository playerProjectionRepository) {
-        this.syncService = syncService;
+        this.rotowireSyncService = rotowireSyncService;
         this.espnProjectionSyncService = espnProjectionSyncService;
         this.playerProjectionRepository = playerProjectionRepository;
     }
 
+    // rotowire now lands in player_projection_raw (source='rotowire'), not the mart.
+    // After Phase 2 the only writer of player_projections is the reconciliation step.
     @PostMapping("/sync/{season}")
-    public String syncProjections(@PathVariable int season) {
-        int count = syncService.syncProjections(season);
-        return "Synced " + count + " stat lines for season " + season;
+    public String syncRotowire(@PathVariable int season) {
+        int count = rotowireSyncService.sync(season);
+        return "Landed " + count + " rotowire raw stat lines for season " + season;
     }
 
     @PostMapping("/sync/espn")

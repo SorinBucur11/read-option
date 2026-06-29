@@ -33,16 +33,19 @@ public class PlayerProjection implements Persistable<PlayerProjectionId>, Scorab
     private String team;
     private Integer gamesPlayed;
 
-    private Integer passingYards;
-    private Integer passingTd;
-    private Integer interceptions;
-    private Integer rushingYards;
-    private Integer rushingTd;
-    private Integer receptions;
-    private Integer receivingYards;
-    private Integer receivingTd;
-    private Integer fumblesLost;
-    private Integer twoPtConv;
+    // NUMERIC(7,2) since V8: the mart holds a real fractional source line or a
+    // per-stat median of source lines (Option A reconciliation). games_played
+    // stays Integer — a game count is genuinely integral.
+    private BigDecimal passingYards;
+    private BigDecimal passingTd;
+    private BigDecimal interceptions;
+    private BigDecimal rushingYards;
+    private BigDecimal rushingTd;
+    private BigDecimal receptions;
+    private BigDecimal receivingYards;
+    private BigDecimal receivingTd;
+    private BigDecimal fumblesLost;
+    private BigDecimal twoPtConv;
 
     private BigDecimal adpStd;
     private BigDecimal adpHalfPpr;

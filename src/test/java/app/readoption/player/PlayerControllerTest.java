@@ -28,6 +28,8 @@ class PlayerControllerTest {
     @MockitoBean private PlayerProfileService playerProfileService;
     @MockitoBean private PlayerRepository playerRepository;
     @MockitoBean private PlayerSyncService playerSyncService;
+    @MockitoBean private PlayerDataSyncService playerDataSyncService;
+    @MockitoBean private PlayerIdMappingService playerIdMappingService;
 
     @Test
     @DisplayName("known player -> 200 with composite body")
