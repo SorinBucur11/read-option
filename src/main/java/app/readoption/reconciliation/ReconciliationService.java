@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Reconciliation orchestrator (Option A). The deterministic engine produces every
@@ -42,6 +43,7 @@ public class ReconciliationService {
     private final VerdictClassifier classifier;
     private final ReconciliationWriter writer;
     private final PlayerScoringService playerScoringService;
+    private final PriorSeasonContextRetriever priorSeasonContextRetriever;
     private final ReconcileProperties properties;
 
     public ReconciliationService(PlayerProjectionRawRepository rawRepository,
@@ -50,6 +52,7 @@ public class ReconciliationService {
                                  VerdictClassifier classifier,
                                  ReconciliationWriter writer,
                                  PlayerScoringService playerScoringService,
+                                 PriorSeasonContextRetriever priorSeasonContextRetriever,
                                  ReconcileProperties properties) {
         this.rawRepository = rawRepository;
         this.playerRepository = playerRepository;
@@ -57,6 +60,7 @@ public class ReconciliationService {
         this.classifier = classifier;
         this.writer = writer;
         this.playerScoringService = playerScoringService;
+        this.priorSeasonContextRetriever = priorSeasonContextRetriever;
         this.properties = properties;
     }
 
@@ -68,6 +72,15 @@ public class ReconciliationService {
         // READ — group every source row for the season by player.
         Map<String, List<PlayerProjectionRaw>> bySource = groupByPlayer(rawRepository.findByYear(season));
         log.info("Reconcile season {}: {} players, dryRun={}", season, bySource.size(), dryRun);
+
+        // READ (cont.) — one batched fetch of prior actuals for every player that *could* be
+        // contested (≥2 source rows). The contested set isn't known until CV is computed in
+        // REASON, so we fetch for all two-source players; one indexed query over ~310 ids beats
+        // a two-pass or a per-player fetch interleaved with the model calls. Consensus players'
+        // actuals go unused — acceptable waste for one query. Skipped on dry runs (no model call).
+        Map<String, List<SeasonActuals>> priorActuals = dryRun
+                ? Map.of()
+                : priorSeasonContextRetriever.retrieve(twoSourcePlayerIds(bySource), season);
 
         // REASON — no transaction open.
         List<PlayerReconciliation> results = new ArrayList<>();
@@ -101,7 +114,7 @@ public class ReconciliationService {
                 continue;   // dry-run: record CV only, no staging/model/audit
             }
 
-            results.add(reconcileOne(playerId, season, scored, cv, threshold, counts));
+            results.add(reconcileOne(playerId, season, scored, cv, threshold, counts, priorActuals));
         }
 
         if (dryRun) {
@@ -123,7 +136,8 @@ public class ReconciliationService {
 
     /** Decide one player's mart line and audit row (real run only). */
     private PlayerReconciliation reconcileOne(String playerId, int season, List<ScoredSource> scored,
-                                              Double cv, double threshold, Counts counts) {
+                                              Double cv, double threshold, Counts counts,
+                                              Map<String, List<SeasonActuals>> priorActuals) {
         int sourceCount = scored.size();
         BigDecimal cvDecimal = cv == null ? null : BigDecimal.valueOf(cv).setScale(4, RoundingMode.HALF_UP);
         String team = representativeTeam(scored);
@@ -148,7 +162,8 @@ public class ReconciliationService {
 
         // Contested: classify the disagreement, then apply the verdict as a selection rule.
         try {
-            Verdict verdict = classifier.classify(toContestedPlayer(playerId, scored));
+            Verdict verdict = classifier.classify(toContestedPlayer(playerId, scored,
+                    priorActuals.getOrDefault(playerId, List.of())));
             counts.llm++;
             return applyVerdict(playerId, season, scored, cvDecimal, team, verdict);
         } catch (VerdictClassificationException e) {
@@ -210,7 +225,8 @@ public class ReconciliationService {
         return scored;
     }
 
-    private ContestedPlayer toContestedPlayer(String playerId, List<ScoredSource> scored) {
+    private ContestedPlayer toContestedPlayer(String playerId, List<ScoredSource> scored,
+                                              List<SeasonActuals> priorActuals) {
         Player player = playerRepository.findById(playerId).orElse(null);
         String name = player != null ? player.getFullName() : playerId;
         String position = player != null ? player.getPosition() : null;
@@ -224,7 +240,7 @@ public class ReconciliationService {
 
         return new ContestedPlayer(name, position, team, properties.measuringStick().name(),
                 sources, high.line().getSource(), high.points(),
-                low.line().getSource(), low.points());
+                low.line().getSource(), low.points(), priorActuals);
     }
 
     private PlayerProjectionReconciliation audit(String playerId, int season, int sourceCount,
@@ -281,6 +297,19 @@ public class ReconciliationService {
 
     private List<BigDecimal> pointsOf(List<ScoredSource> scored) {
         return scored.stream().map(ScoredSource::points).toList();
+    }
+
+    /**
+     * Ids of players with ≥2 source rows — the only players that can ever be contested, and
+     * thus the only ones whose prior actuals can be needed. The single batch fetch is scoped
+     * to this set (not all players, not just the eventual contested set, which isn't known
+     * until CV is computed).
+     */
+    private Set<String> twoSourcePlayerIds(Map<String, List<PlayerProjectionRaw>> bySource) {
+        return bySource.entrySet().stream()
+                .filter(e -> e.getValue().size() >= 2)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toSet());
     }
 
     private Map<String, List<PlayerProjectionRaw>> groupByPlayer(List<PlayerProjectionRaw> rows) {

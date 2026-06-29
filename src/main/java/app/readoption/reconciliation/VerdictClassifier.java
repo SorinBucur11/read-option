@@ -9,6 +9,7 @@ import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * Wraps {@link ChatClient} + {@link BeanOutputConverter} to turn a contested player's
@@ -80,7 +81,8 @@ public class VerdictClassifier {
         return verdict;
     }
 
-    private String buildUserPrompt(ContestedPlayer player) {
+    // Package-private: the prompt-rendering seam is unit-tested directly (no live model).
+    String buildUserPrompt(ContestedPlayer player) {
         StringBuilder sb = new StringBuilder();
         sb.append("Player: ").append(player.name())
                 .append(", ").append(player.position())
@@ -96,6 +98,7 @@ public class VerdictClassifier {
                 .append(" (").append(player.highPoints()).append("). ");
         sb.append("Lowest: ").append(player.lowSource())
                 .append(" (").append(player.lowPoints()).append(").\n");
+        appendPriorActuals(sb, player.priorActuals());
         sb.append("Where does the gap live (volume / efficiency / touchdowns)? Classify: ")
                 .append("TRUST_CONSENSUS, FAVOR_HIGH_SOURCE, FAVOR_LOW_SOURCE, or FLAG_UNCERTAIN.\n\n");
         sb.append(converter.getFormat());
@@ -121,6 +124,48 @@ public class VerdictClassifier {
     private void appendStat(StringBuilder sb, String label, BigDecimal value) {
         if (value != null && value.signum() != 0) {
             sb.append(label).append('=').append(value.stripTrailingZeros().toPlainString()).append("  ");
+        }
+    }
+
+    /**
+     * Recent actual production as the baseline the verdict is judged against. Empty history is
+     * stated explicitly ("none on record") — for the model that's the rookie / unestablished-role
+     * signal, not a missing field. Each season carries {@code games_played} so a low total reads
+     * as role vs. injury, then only the non-null/non-zero stats (same skip rule as the source
+     * breakdown), keeping it to ~3 short lines per contested player.
+     */
+    private void appendPriorActuals(StringBuilder sb, List<SeasonActuals> priorActuals) {
+        if (priorActuals.isEmpty()) {
+            sb.append("Recent actual production: none on record (rookie or no prior NFL stats).\n");
+            return;
+        }
+        sb.append("Recent actual production:\n");
+        for (SeasonActuals s : priorActuals) {
+            sb.append("- ").append(s.year()).append(": ");
+            if (s.gamesPlayed() != null) {
+                sb.append(s.gamesPlayed()).append(" g  ");
+            }
+            appendActualStat(sb, "passYd", s.passingYards());
+            appendActualStat(sb, "passTd", s.passingTd());
+            appendActualStat(sb, "rushYd", s.rushingYards());
+            appendActualStat(sb, "rushTd", s.rushingTd());
+            appendActualStat(sb, "rec", s.receptions());
+            appendActualStat(sb, "recYd", s.receivingYards());
+            appendActualStat(sb, "recTd", s.receivingTd());
+            stripTrailingSpaces(sb);
+            sb.append('\n');
+        }
+    }
+
+    private void appendActualStat(StringBuilder sb, String label, Integer value) {
+        if (value != null && value != 0) {
+            sb.append(label).append('=').append(value).append("  ");
+        }
+    }
+
+    private void stripTrailingSpaces(StringBuilder sb) {
+        while (sb.length() > 0 && sb.charAt(sb.length() - 1) == ' ') {
+            sb.setLength(sb.length() - 1);
         }
     }
 }

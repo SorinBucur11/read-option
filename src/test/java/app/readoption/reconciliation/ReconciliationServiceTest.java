@@ -19,13 +19,17 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anySet;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -42,6 +46,7 @@ class ReconciliationServiceTest {
     @Mock private VerdictClassifier classifier;
     @Mock private ReconciliationWriter writer;
     @Mock private PlayerScoringService playerScoringService;
+    @Mock private PriorSeasonContextRetriever priorSeasonContextRetriever;
 
     private ReconciliationService service;
 
@@ -51,7 +56,7 @@ class ReconciliationServiceTest {
                 new BigDecimal("0.12"), new BigDecimal("20.0"), MeasuringStick.PPR, "claude-sonnet-4-6",
                 "test system prompt");
         service = new ReconciliationService(rawRepository, playerRepository, scoringService,
-                classifier, writer, playerScoringService, props);
+                classifier, writer, playerScoringService, priorSeasonContextRetriever, props);
 
         // Measuring-stick points are driven off receivingYards so each test controls the spread.
         when(scoringService.calculate(any(), any())).thenAnswer(inv -> {
@@ -64,6 +69,8 @@ class ReconciliationServiceTest {
         when(writer.write(anyInt(), any())).thenReturn(Set.of("P1"));
         when(playerScoringService.computeAndSaveForPlayers(anyInt(), any())).thenReturn(6);
         when(playerRepository.findById(any())).thenReturn(Optional.empty());
+        // Default: no prior history. Tests that assert on the retrieved actuals override this.
+        when(priorSeasonContextRetriever.retrieve(anySet(), anyInt())).thenReturn(Map.of());
     }
 
     /** A source row whose measuring-stick points equal {@code points}. */
@@ -229,6 +236,52 @@ class ReconciliationServiceTest {
         service.reconcile(SEASON, false);
 
         verify(playerScoringService).computeAndSaveForPlayers(SEASON, Set.of("P1"));
+    }
+
+    @Test
+    @DisplayName("prior actuals are retrieved once, for the ≥2-source id set only, not per player")
+    void retrievesPriorActualsOnceForTwoSourceIds() {
+        // P1 contested (2 sources), P2 single-source (never contested → never needs actuals).
+        when(rawRepository.findByYear(SEASON)).thenReturn(List.of(
+                raw("P1", "espn", 100), raw("P1", "rotowire", 200),
+                raw("P2", "espn", 100)));
+        when(classifier.classify(any())).thenReturn(
+                new Verdict(ReconciliationVerdict.TRUST_CONSENSUS, Confidence.HIGH, "ok"));
+
+        service.reconcile(SEASON, false);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Set<String>> idCaptor = ArgumentCaptor.forClass(Set.class);
+        verify(priorSeasonContextRetriever, times(1)).retrieve(idCaptor.capture(), eq(SEASON));
+        assertThat(idCaptor.getValue()).containsExactly("P1");
+    }
+
+    @Test
+    @DisplayName("retrieved actuals are threaded onto the ContestedPlayer handed to the classifier")
+    void contestedPlayerCarriesPriorActuals() {
+        contested();
+        List<SeasonActuals> actuals = List.of(
+                new SeasonActuals(2025, 16, null, null, 280, 2, 18, 140, 1));
+        when(priorSeasonContextRetriever.retrieve(anySet(), eq(SEASON)))
+                .thenReturn(Map.of("P1", actuals));
+        when(classifier.classify(any())).thenReturn(
+                new Verdict(ReconciliationVerdict.FAVOR_LOW_SOURCE, Confidence.HIGH, "role"));
+
+        service.reconcile(SEASON, false);
+
+        ArgumentCaptor<ContestedPlayer> captor = ArgumentCaptor.forClass(ContestedPlayer.class);
+        verify(classifier).classify(captor.capture());
+        assertThat(captor.getValue().priorActuals()).isEqualTo(actuals);
+    }
+
+    @Test
+    @DisplayName("dry run never retrieves prior actuals (no model call to feed)")
+    void dryRunSkipsRetrieval() {
+        contested();
+
+        service.reconcile(SEASON, true);
+
+        verify(priorSeasonContextRetriever, never()).retrieve(anySet(), anyInt());
     }
 
     /** espn 100 vs rotowire 200 → cv ≈ 0.333 > 0.12, so the player is contested. */
