@@ -1,0 +1,6 @@
+{
+  "permissions": {
+    "allow": ["Bash(./mvnw:*)", "Bash(docker compose:*)", "Bash(psql:*)"],
+    "deny": ["Read(./.env)", "Read(./**/*.env)"]
+  }
+}
