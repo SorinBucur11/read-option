@@ -13,8 +13,8 @@ CREATE TABLE league_config (
 
     -- resolved scoring rules (typed)
     reception_format    VARCHAR(20)  NOT NULL,   -- ReceptionFormat enum name (STRING, never ORDINAL)
-    passing_td_points   NUMERIC(4,1) NOT NULL,
-    interception_points NUMERIC(4,1) NOT NULL,
+    passing_td_points   NUMERIC(4,2) NOT NULL,
+    interception_points NUMERIC(4,2) NOT NULL,
     te_reception_bonus  NUMERIC(4,2) NOT NULL,   -- resolver registry value; 0 = no TE premium
 
     -- roster

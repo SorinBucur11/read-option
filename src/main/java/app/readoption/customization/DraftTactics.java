@@ -16,7 +16,11 @@ import java.util.Map;
  * <ul>
  *   <li>{@code positionalStrategy} / {@code riskPosture} — {@code null} means the user
  *       stated no lean; the parser must not invent one.</li>
- *   <li>{@code earliestRoundByPosition} — e.g. {@code {QB: 10}} = "no QB before round 10".</li>
+ *   <li>{@code earliestRoundByPosition} — e.g. {@code {QB: 10}} = "no QB before round 10".
+ *       The one tactics field with a mechanical consumer (the Phase 4 draft gate), so its
+ *       1..30 round bound is BLOCKING and lives in {@code DraftTacticsValidator} — not in
+ *       annotations here, which the {@code tactics.*} prefix rule would demote to
+ *       ASSUMPTION.</li>
  *   <li>{@code freeformNotes} — open-set tactics (stacking, handcuffing, personal
  *       quirks) land here verbatim. They graduate to typed fields only when a consumer
  *       that can act on them exists — do not add a typed {@code stackQbWithReceiver}

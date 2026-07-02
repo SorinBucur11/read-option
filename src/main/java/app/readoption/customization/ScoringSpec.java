@@ -1,9 +1,11 @@
 package app.readoption.customization;
 
 import app.readoption.scoring.ReceptionFormat;
-import jakarta.validation.constraints.Max;
-import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
+
+import java.math.BigDecimal;
 
 /**
  * The scoring portion of the LLM's spec. Every field is exactly one of three kinds:
@@ -24,7 +26,7 @@ import jakarta.validation.constraints.NotNull;
  */
 public record ScoringSpec(
         @NotNull ReceptionFormat basePreset,
-        @Min(3) @Max(8) Integer passingTdPoints,
-        @Min(-6) @Max(0) Integer interceptionPoints,
+        @DecimalMin("3") @DecimalMax("8") BigDecimal passingTdPoints,     // null = preset default
+        @DecimalMin("-6") @DecimalMax("0") BigDecimal interceptionPoints, // null = preset default
         boolean tePremium) {
 }

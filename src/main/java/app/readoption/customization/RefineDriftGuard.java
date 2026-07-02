@@ -4,6 +4,7 @@ import app.readoption.customization.validation.IssueSeverity;
 import app.readoption.customization.validation.ValidationIssue;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -30,9 +31,9 @@ public class RefineDriftGuard {
         ScoringSpec sa = after.rules() == null ? null : after.rules().scoring();
         compare(changes, "scoring.basePreset",
                 sb == null ? null : sb.basePreset(), sa == null ? null : sa.basePreset());
-        compare(changes, "scoring.passingTdPoints",
+        compareNumeric(changes, "scoring.passingTdPoints",
                 sb == null ? null : sb.passingTdPoints(), sa == null ? null : sa.passingTdPoints());
-        compare(changes, "scoring.interceptionPoints",
+        compareNumeric(changes, "scoring.interceptionPoints",
                 sb == null ? null : sb.interceptionPoints(), sa == null ? null : sa.interceptionPoints());
         compare(changes, "scoring.tePremium",
                 sb == null ? null : sb.tePremium(), sa == null ? null : sa.tePremium());
@@ -80,9 +81,28 @@ public class RefineDriftGuard {
 
     private void compare(List<ValidationIssue> changes, String field, Object before, Object after) {
         if (!Objects.equals(before, after)) {
-            changes.add(new ValidationIssue(field, IssueSeverity.ASSUMPTION,
-                    "Changed during refine: " + before + " -> " + after
-                            + ". If your correction did not ask for this, reject it with another correction."));
+            addChange(changes, field, before, after);
         }
+    }
+
+    /**
+     * {@link BigDecimal} fields compare by value, not {@code equals} — a model
+     * re-emitting {@code 4} as {@code 4.0} on a refine turn is the same number,
+     * not drift.
+     */
+    private void compareNumeric(List<ValidationIssue> changes, String field,
+                                BigDecimal before, BigDecimal after) {
+        boolean equal = before == null
+                ? after == null
+                : after != null && before.compareTo(after) == 0;
+        if (!equal) {
+            addChange(changes, field, before, after);
+        }
+    }
+
+    private void addChange(List<ValidationIssue> changes, String field, Object before, Object after) {
+        changes.add(new ValidationIssue(field, IssueSeverity.ASSUMPTION,
+                "Changed during refine: " + before + " -> " + after
+                        + ". If your correction did not ask for this, reject it with another correction."));
     }
 }

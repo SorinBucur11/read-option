@@ -7,7 +7,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.anthropic.AnthropicChatOptions;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.converter.BeanOutputConverter;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Component;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Wraps {@link ChatClient} + {@link BeanOutputConverter} to turn a plain-English
@@ -37,12 +43,30 @@ public class LeagueParsingService {
 
     public LeagueParsingService(ChatClient.Builder chatClientBuilder,
                                 CustomizationProperties properties,
-                                ObjectMapper objectMapper) {
-        // System prompt externalized to CustomizationProperties for prompt iteration;
-        // constant across calls, hence defaultSystem.
-        this.chatClient = chatClientBuilder.defaultSystem(properties.systemPrompt()).build();
+                                ObjectMapper objectMapper,
+                                @Value("classpath:prompts/league-parser.txt") Resource promptResource) {
+        // System prompt externalized to a classpath file (a properties value spanning
+        // ~18 continuation lines truncates silently on a stray trailing space and still
+        // passes @NotBlank). Fail fast at startup, not on the first request; constant
+        // across calls, hence defaultSystem.
+        String systemPrompt = readPrompt(promptResource);
+        if (systemPrompt.isBlank()) {
+            throw new IllegalStateException("league-parser system prompt is empty: " + promptResource);
+        }
+        log.info("Loaded league-parser system prompt ({} chars) from {}",
+                systemPrompt.length(), promptResource);
+        this.chatClient = chatClientBuilder.defaultSystem(systemPrompt).build();
         this.objectMapper = objectMapper;
         this.model = properties.model();
+    }
+
+    private static String readPrompt(Resource promptResource) {
+        try {
+            return promptResource.getContentAsString(StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException(
+                    "could not read league-parser system prompt from " + promptResource, e);
+        }
     }
 
     /** Free text → parsed league. Throws {@link LeagueParseException} on any failure. */

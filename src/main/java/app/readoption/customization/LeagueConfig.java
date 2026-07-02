@@ -2,7 +2,6 @@ package app.readoption.customization;
 
 import app.readoption.scoring.Position;
 import app.readoption.scoring.ReceptionFormat;
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
@@ -14,7 +13,6 @@ import jakarta.persistence.Id;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
-import jakarta.persistence.Transient;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -22,8 +20,6 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
-import org.springframework.data.domain.Persistable;
-import org.springframework.lang.Nullable;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -35,6 +31,11 @@ import java.util.Set;
  * columns (engine-consumed, validate-on-write); {@code tactics} is JSONB on the
  * typed {@link DraftTactics} (LLM-consumed, never queried), same idiom as
  * {@code source_payload}. No FK — there is no user table yet.
+ *
+ * <p>Deliberately <b>not</b> {@code Persistable}: that pattern defeats Spring Data's
+ * exists-check on <i>assigned</i> ids, but this table uses {@code IDENTITY} generation
+ * and only ever inserts (one row per confirmed config, no upsert) — the null pre-insert
+ * id already marks the entity as new. The id also belongs in confirm's JSON response.
  */
 @Entity
 @Table(name = "league_config")
@@ -43,7 +44,7 @@ import java.util.Set;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-public class LeagueConfig implements Persistable<Long> {
+public class LeagueConfig {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -92,28 +93,6 @@ public class LeagueConfig implements Persistable<Long> {
 
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
-
-    @Transient
-    @JsonIgnore
-    @Builder.Default
-    private boolean isNew = true;
-
-    @Nullable
-    @Override
-    @JsonIgnore
-    public Long getId() {
-        return id;
-    }
-
-    @Override
-    @JsonIgnore
-    public boolean isNew() {
-        return isNew;
-    }
-
-    public void markExisting() {
-        this.isNew = false;
-    }
 
     @PrePersist
     protected void onCreate() {

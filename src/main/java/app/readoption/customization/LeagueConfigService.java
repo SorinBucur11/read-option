@@ -1,5 +1,6 @@
 package app.readoption.customization;
 
+import app.readoption.customization.validation.DraftTacticsValidator;
 import app.readoption.customization.validation.IssueSeverity;
 import app.readoption.customization.validation.LeagueRulesValidator;
 import app.readoption.customization.validation.ValidationIssue;
@@ -27,11 +28,14 @@ import java.util.stream.Collectors;
  *
  * <p>Validation runs in two passes and both come back as one issue list: the Jakarta
  * annotation pass (run programmatically — the object came from the model, not from a
- * client we can 400) and the object-level {@link LeagueRulesValidator}. Where both
- * hit the same field, the object validator's value-bearing message wins. Violations
- * under {@code tactics} surface as ASSUMPTION, not BLOCKING — tactics are
- * soft-validated (their consumer is an LLM), rules are hard-validated (their
- * consumer is the engine).
+ * client we can 400) and the object-level validators ({@link LeagueRulesValidator}
+ * for the engine-bound half, {@link DraftTacticsValidator} for the strategy-bound
+ * half). Where both hit the same field, the object validator's value-bearing message
+ * wins. Annotation violations under {@code tactics} surface as ASSUMPTION, not
+ * BLOCKING — tactics are soft-validated (their consumer is an LLM), rules are
+ * hard-validated (their consumer is the engine). The one exception is
+ * {@code earliestRoundByPosition}, whose mechanical Phase 4 consumer earns it a
+ * BLOCKING bound in the tactics validator.
  */
 @Service
 public class LeagueConfigService {
@@ -40,6 +44,7 @@ public class LeagueConfigService {
 
     private final LeagueParsingService parsingService;
     private final LeagueRulesValidator rulesValidator;
+    private final DraftTacticsValidator tacticsValidator;
     private final LeagueRulesResolver resolver;
     private final RefineDriftGuard driftGuard;
     private final LeagueConfigRepository repository;
@@ -48,6 +53,7 @@ public class LeagueConfigService {
 
     public LeagueConfigService(LeagueParsingService parsingService,
                                LeagueRulesValidator rulesValidator,
+                               DraftTacticsValidator tacticsValidator,
                                LeagueRulesResolver resolver,
                                RefineDriftGuard driftGuard,
                                LeagueConfigRepository repository,
@@ -55,6 +61,7 @@ public class LeagueConfigService {
                                CustomizationProperties properties) {
         this.parsingService = parsingService;
         this.rulesValidator = rulesValidator;
+        this.tacticsValidator = tacticsValidator;
         this.resolver = resolver;
         this.driftGuard = driftGuard;
         this.repository = repository;
@@ -127,9 +134,11 @@ public class LeagueConfigService {
         List<ValidationIssue> annotationIssues = validator.validate(parsed).stream()
                 .map(this::toIssue)
                 .toList();
-        List<ValidationIssue> objectIssues = parsed.rules() == null
+        List<ValidationIssue> objectIssues = new ArrayList<>(parsed.rules() == null
                 ? List.of()
-                : rulesValidator.validate(parsed.rules());
+                : rulesValidator.validate(parsed.rules()));
+        // Tactics validator is null-safe on null tactics and null map.
+        objectIssues.addAll(tacticsValidator.validate(parsed.tactics()));
 
         // Merge, preferring the object validator's value-bearing message on a field
         // both passes flagged (e.g. a null basePreset).

@@ -75,6 +75,10 @@ JSN `player_id=9488`. If a "refactor" changes these numbers, stop — it's a cor
 
 ## Workflow rules
 
+- **Never `git commit` (or push) unless the owner explicitly instructs it or has
+  approved the commit.** Stage and report; the owner commits. A spec saying "keep
+  this as its own commit" describes commit *boundaries*, not permission to commit.
+  When a commit IS approved, the message is a **single line** — no body.
 - **Route by blast radius, not line count.** Own load-bearing logic and its review;
   delegate scaffolding.
 - **Keep a correctness fix and a standardization refactor in separate commits.**

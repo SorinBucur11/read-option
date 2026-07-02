@@ -35,12 +35,11 @@ public class LeagueRulesResolver {
         ScoringSpec scoring = spec.scoring();
 
         // Overlay extracted deltas where non-null; else the preset/registry default.
-        // Integer → BigDecimal goes through toString, never the double constructor.
         BigDecimal passingTd = scoring.passingTdPoints() != null
-                ? new BigDecimal(scoring.passingTdPoints().toString())
+                ? scoring.passingTdPoints()
                 : DEFAULT_PASSING_TD_POINTS;
         BigDecimal interception = scoring.interceptionPoints() != null
-                ? new BigDecimal(scoring.interceptionPoints().toString())
+                ? scoring.interceptionPoints()
                 : ScoringRules.DEFAULT_INTERCEPTION_POINTS;
         BigDecimal teBonus = scoring.tePremium()
                 ? TE_PREMIUM_BONUS

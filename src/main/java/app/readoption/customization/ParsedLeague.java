@@ -20,5 +20,5 @@ import jakarta.validation.constraints.NotNull;
  */
 public record ParsedLeague(
         @NotNull @Valid LeagueRulesSpec rules,
-        @NotNull @Valid DraftTactics tactics) {
+        @Valid DraftTactics tactics) {
 }
