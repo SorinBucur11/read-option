@@ -1,12 +1,13 @@
 package app.readoption;
 
+import app.readoption.customization.CustomizationProperties;
 import app.readoption.reconciliation.ReconcileProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
 @SpringBootApplication
-@EnableConfigurationProperties(ReconcileProperties.class)
+@EnableConfigurationProperties({ReconcileProperties.class, CustomizationProperties.class})
 public class ReadOptionApplication {
 
 	public static void main(String[] args) {

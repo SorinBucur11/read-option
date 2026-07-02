@@ -1,5 +1,6 @@
 package app.readoption.error;
 
+import app.readoption.customization.LeagueConfigNotReadyException;
 import app.readoption.espn.EspnUnavailableException;
 import app.readoption.player.PlayerNotFoundException;
 import jakarta.validation.ConstraintViolation;
@@ -61,6 +62,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 HttpStatus.INTERNAL_SERVER_ERROR, "An unexpected error occurred");
         pd.setTitle("Internal Server Error");
         pd.setType(URI.create("https://readoption.app/problems/internal-error"));
+        return pd;
+    }
+
+    @ExceptionHandler(LeagueConfigNotReadyException.class)
+    public ProblemDetail handleLeagueConfigNotReady(LeagueConfigNotReadyException ex) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(
+                HttpStatus.CONFLICT, "League config has blocking issues and cannot be confirmed");
+        pd.setTitle("League Config Not Ready");
+        pd.setType(URI.create("https://readoption.app/problems/league-config-not-ready"));
+        pd.setProperty("issues", ex.getIssues());
         return pd;
     }
 
