@@ -56,7 +56,7 @@ class PlayerScoringServiceTest {
     void pastSeasonUsesStatsRepo() {
         when(playerStatsRepository.findByYear(2025)).thenReturn(List.of(stat("1", 2025)));
         when(playerScoringRepository.findByYear(2025)).thenReturn(List.of());
-        when(scoringService.calculate(any(), any())).thenReturn(DUMMY_RESULT);
+        when(scoringService.calculate(any(), any(), any())).thenReturn(DUMMY_RESULT);
 
         service.computeAndSaveForSeason(2025);
 
@@ -69,7 +69,7 @@ class PlayerScoringServiceTest {
     void currentSeasonUsesProjectionRepo() {
         when(playerProjectionRepository.findByYear(2026)).thenReturn(List.of(proj("1", 2026)));
         when(playerScoringRepository.findByYear(2026)).thenReturn(List.of());
-        when(scoringService.calculate(any(), any())).thenReturn(DUMMY_RESULT);
+        when(scoringService.calculate(any(), any(), any())).thenReturn(DUMMY_RESULT);
 
         service.computeAndSaveForSeason(2026);
 
@@ -82,7 +82,7 @@ class PlayerScoringServiceTest {
     void futureSeasonUsesProjectionRepo() {
         when(playerProjectionRepository.findByYear(2027)).thenReturn(List.of(proj("1", 2027)));
         when(playerScoringRepository.findByYear(2027)).thenReturn(List.of());
-        when(scoringService.calculate(any(), any())).thenReturn(DUMMY_RESULT);
+        when(scoringService.calculate(any(), any(), any())).thenReturn(DUMMY_RESULT);
 
         service.computeAndSaveForSeason(2027);
 

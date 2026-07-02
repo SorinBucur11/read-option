@@ -16,7 +16,7 @@ class ScoringServiceTest {
     void calculateQbStandard6pt() {
         StatLine qb = testStatLine(4000, 30, 10, 200, 2, 0, 0, 0, 3, 1, 17);
 
-        ScoringResult result = scoringService.calculate(qb, ScoringFormat.STANDARD_6PT);
+        ScoringResult result = calculate(qb, ScoringFormat.STANDARD_6PT, Position.QB);
 
         // 4000*0.04=160 + 30*6=180 + 10*(-2)=-20 + 200*0.1=20 + 2*6=12
         // + 0 + 0 + 0 + 3*(-2)=-6 + 1*2=2 = 348.00
@@ -30,7 +30,7 @@ class ScoringServiceTest {
     void calculateRbStandard6pt() {
         StatLine rb = testStatLine(0, 0, 0, 1200, 10, 50, 400, 3, 2, 0, 16);
 
-        ScoringResult result = scoringService.calculate(rb, ScoringFormat.STANDARD_6PT);
+        ScoringResult result = calculate(rb, ScoringFormat.STANDARD_6PT, Position.RB);
 
         // 1200*0.1=120 + 10*6=60 + 50*0=0 + 400*0.1=40 + 3*6=18 + 2*(-2)=-4 = 234.00
         assertEquals(new BigDecimal("234.00"), result.totalPoints());
@@ -42,7 +42,7 @@ class ScoringServiceTest {
     void calculateRbPpr4pt() {
         StatLine rb = testStatLine(0, 0, 0, 1200, 10, 50, 400, 3, 2, 0, 16);
 
-        ScoringResult result = scoringService.calculate(rb, ScoringFormat.PPR_4PT);
+        ScoringResult result = calculate(rb, ScoringFormat.PPR_4PT, Position.RB);
 
         // Same as Standard but receptions: 50 * 1.0 = 50 extra → 234 + 50 = 284.00
         assertEquals(new BigDecimal("284.00"), result.totalPoints());
@@ -53,8 +53,8 @@ class ScoringServiceTest {
     void passingTd4ptVs6pt() {
         StatLine qb = testStatLine(0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 17);
 
-        ScoringResult result4pt = scoringService.calculate(qb, ScoringFormat.STANDARD_4PT);
-        ScoringResult result6pt = scoringService.calculate(qb, ScoringFormat.STANDARD_6PT);
+        ScoringResult result4pt = calculate(qb, ScoringFormat.STANDARD_4PT, Position.QB);
+        ScoringResult result6pt = calculate(qb, ScoringFormat.STANDARD_6PT, Position.QB);
 
         assertEquals(new BigDecimal("40.00"), result4pt.totalPoints());
         assertEquals(new BigDecimal("60.00"), result6pt.totalPoints());
@@ -66,7 +66,7 @@ class ScoringServiceTest {
         StatLine empty = testStatLine(null, null, null, null, null,
                 null, null, null, null, null, null);
 
-        ScoringResult result = scoringService.calculate(empty, ScoringFormat.STANDARD_6PT);
+        ScoringResult result = calculate(empty, ScoringFormat.STANDARD_6PT, Position.WR);
 
         assertEquals(new BigDecimal("0.00"), result.totalPoints());
         assertEquals(new BigDecimal("0.00"), result.pointsPerGame());
@@ -77,7 +77,7 @@ class ScoringServiceTest {
     void calculateZeroGamesPlayed() {
         StatLine stats = testStatLine(100, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
-        ScoringResult result = scoringService.calculate(stats, ScoringFormat.STANDARD_6PT);
+        ScoringResult result = calculate(stats, ScoringFormat.STANDARD_6PT, Position.QB);
 
         // 100*0.04=4 + 1*6=6 = 10.00
         assertEquals(new BigDecimal("10.00"), result.totalPoints());
@@ -89,9 +89,9 @@ class ScoringServiceTest {
     void calculateHalfPpr() {
         StatLine wr = testStatLine(0, 0, 0, 0, 0, 80, 1100, 8, 0, 0, 17);
 
-        ScoringResult standard = scoringService.calculate(wr, ScoringFormat.STANDARD_6PT);
-        ScoringResult halfPpr = scoringService.calculate(wr, ScoringFormat.HALF_PPR_6PT);
-        ScoringResult ppr = scoringService.calculate(wr, ScoringFormat.PPR_6PT);
+        ScoringResult standard = calculate(wr, ScoringFormat.STANDARD_6PT, Position.WR);
+        ScoringResult halfPpr = calculate(wr, ScoringFormat.HALF_PPR_6PT, Position.WR);
+        ScoringResult ppr = calculate(wr, ScoringFormat.PPR_6PT, Position.WR);
 
         // Base: 1100*0.1=110 + 8*6=48 = 158
         assertEquals(new BigDecimal("158.00"), standard.totalPoints());
@@ -105,13 +105,48 @@ class ScoringServiceTest {
         // Player with only 3 two-point conversions and 2 fumbles lost
         StatLine stats = testStatLine(0, 0, 0, 0, 0, 0, 0, 0, 2, 3, 17);
 
-        ScoringResult result = scoringService.calculate(stats, ScoringFormat.STANDARD_6PT);
+        ScoringResult result = calculate(stats, ScoringFormat.STANDARD_6PT, Position.RB);
 
         // 2*(-2)=-4 + 3*2=6 = 2.00
         assertEquals(new BigDecimal("2.00"), result.totalPoints());
     }
 
-    // --- Test helper ---
+    @Test
+    @DisplayName("No preset carries a TE premium: a TE scores identically to a WR")
+    void presetsHaveNoTePremium() {
+        StatLine line = testStatLine(0, 0, 0, 0, 0, 80, 1100, 8, 0, 0, 17);
+
+        ScoringResult asTe = calculate(line, ScoringFormat.PPR_6PT, Position.TE);
+        ScoringResult asWr = calculate(line, ScoringFormat.PPR_6PT, Position.WR);
+
+        // 1100*0.1=110 + 8*6=48 + 80*1.0=80 = 238.00, regardless of position.
+        assertEquals(new BigDecimal("238.00"), asTe.totalPoints());
+        assertEquals(asWr.totalPoints(), asTe.totalPoints());
+    }
+
+    @Test
+    @DisplayName("TE premium applies to TEs only when the rules carry a bonus")
+    void teReceptionBonusAppliesToTeOnly() {
+        StatLine line = testStatLine(0, 0, 0, 0, 0, 80, 1100, 8, 0, 0, 17);
+        // PPR base (1.0/reception) plus a 0.5 TE premium.
+        ScoringRules tePremium = ScoringRules.of(
+                new BigDecimal("1.0"), new BigDecimal("6"),
+                ScoringRules.DEFAULT_INTERCEPTION_POINTS, new BigDecimal("0.5"));
+
+        ScoringResult te = scoringService.calculate(line, tePremium, Position.TE);
+        ScoringResult wr = scoringService.calculate(line, tePremium, Position.WR);
+
+        // WR: 110 + 48 + 80*1.0 = 238.00; TE adds 80*0.5 = 40 → 278.00.
+        assertEquals(new BigDecimal("238.00"), wr.totalPoints());
+        assertEquals(new BigDecimal("278.00"), te.totalPoints());
+    }
+
+    // --- Test helpers ---
+
+    /** Score a stat line through a named preset, the path the leaderboard loop uses. */
+    private ScoringResult calculate(StatLine stats, ScoringFormat format, Position position) {
+        return scoringService.calculate(stats, format.toScoringRules(), position);
+    }
 
     /**
      * Creates a StatLine with specified values. No JPA, no Spring, no database.

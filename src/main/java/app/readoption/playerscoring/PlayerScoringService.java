@@ -134,7 +134,9 @@ public class PlayerScoringService {
 
         for (Scorable line : lines) {
             for (ScoringFormat format : ScoringFormat.values()) {
-                ScoringResult result = scoringService.calculate(line, format);
+                // Presets carry no position-dependent rule, so position is immaterial
+                // here; the resolved-rules path (Phase 3) is where position will matter.
+                ScoringResult result = scoringService.calculate(line, format.toScoringRules(), null);
 
                 PlayerScoring scoring = PlayerScoring.builder()
                         .playerId(line.getPlayerId())

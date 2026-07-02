@@ -6,6 +6,7 @@ import app.readoption.playerprojection.PlayerProjectionRaw;
 import app.readoption.playerprojection.PlayerProjectionRawRepository;
 import app.readoption.playerscoring.PlayerScoringService;
 import app.readoption.scoring.ScoringFormat;
+import app.readoption.scoring.ScoringRules;
 import app.readoption.scoring.ScoringService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -217,9 +218,12 @@ public class ReconciliationService {
 
     private List<ScoredSource> scoreSources(List<PlayerProjectionRaw> sourceRows, ScoringFormat stick) {
         List<ScoredSource> scored = new ArrayList<>(sourceRows.size());
+        ScoringRules rules = stick.toScoringRules();
         for (PlayerProjectionRaw row : sourceRows) {
-            // Throwaway points: measure spread only, never written to the mart.
-            BigDecimal points = scoringService.calculate(row, stick).totalPoints();
+            // Throwaway points: measure spread only, never written to the mart. The
+            // measuring-stick preset carries no position-dependent rule, so position
+            // is immaterial to this spread measurement.
+            BigDecimal points = scoringService.calculate(row, rules, null).totalPoints();
             scored.add(new ScoredSource(row, points));
         }
         return scored;

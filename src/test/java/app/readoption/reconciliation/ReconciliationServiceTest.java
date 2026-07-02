@@ -59,7 +59,7 @@ class ReconciliationServiceTest {
                 classifier, writer, playerScoringService, priorSeasonContextRetriever, props);
 
         // Measuring-stick points are driven off receivingYards so each test controls the spread.
-        when(scoringService.calculate(any(), any())).thenAnswer(inv -> {
+        when(scoringService.calculate(any(), any(), any())).thenAnswer(inv -> {
             StatLine s = inv.getArgument(0);
             Number ry = s.getReceivingYards();
             BigDecimal pts = ry == null ? BigDecimal.ZERO : new BigDecimal(ry.toString());

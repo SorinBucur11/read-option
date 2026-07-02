@@ -8,55 +8,48 @@ import java.math.RoundingMode;
 /**
  * Calculates fantasy football points from raw statistics.
  *
- * Fixed scoring rules (same across all formats):
- *   Passing yards:     0.04 pts/yard (1 pt per 25 yards)
- *   Rushing yards:     0.1  pts/yard (1 pt per 10 yards)
- *   Receiving yards:   0.1  pts/yard (1 pt per 10 yards)
- *   Rushing TD:        6 pts
- *   Receiving TD:      6 pts
- *   Interception:     -1 pt
- *   Fumble lost:      -2 pts
- *   2-point conversion: 2 pts
+ * <p>Every per-stat multiplier comes from the resolved {@link ScoringRules} handed in —
+ * there are no scoring constants left in this class. A {@link ScoringFormat} preset
+ * resolves to its rules via {@link ScoringFormat#toScoringRules()}; a user-customized
+ * league resolves to its rules in the Phase 3 customization resolver. Either way the
+ * service is agnostic about where the rules came from.
  *
- * Variable rules (defined by ScoringFormat):
- *   Passing TD:        4 or 6 pts
- *   Reception:         0, 0.5, or 1.0 pts
+ * <p>{@link Position} is threaded in only so a position-dependent rule — currently the
+ * TE reception bonus — can apply to the right players. {@link StatLine} stays pure (no
+ * position on the stat contract); the caller, which already knows the player, passes it.
+ * A {@code null} position simply means no position-dependent rule fires, which is the
+ * case for all six presets (they carry {@link ScoringRules#NO_TE_BONUS}).
  */
 @Service
 public class ScoringService {
 
-    private static final BigDecimal PASS_YARDS_PTS = new BigDecimal("0.04");
-    private static final BigDecimal RUSH_YARDS_PTS = new BigDecimal("0.1");
-    private static final BigDecimal REC_YARDS_PTS = new BigDecimal("0.1");
-    private static final BigDecimal RUSH_TD_PTS = new BigDecimal("6");
-    private static final BigDecimal REC_TD_PTS = new BigDecimal("6");
-    private static final BigDecimal INT_PTS = new BigDecimal("-2");
-    private static final BigDecimal FUMBLE_LOST_PTS = new BigDecimal("-2");
-    private static final BigDecimal TWO_PT_CONV_PTS = new BigDecimal("2");
-
     private static final int SCALE = 2;
     private static final RoundingMode ROUNDING = RoundingMode.HALF_UP;
 
-    public ScoringResult calculate(StatLine stats, ScoringFormat format) {
-        BigDecimal passTdPts = BigDecimal.valueOf(format.getPassingTdPoints());
-        BigDecimal receptionPts = BigDecimal.valueOf(format.getPointsPerReception());
+    public ScoringResult calculate(StatLine stats, ScoringRules rules, Position position) {
+        BigDecimal receptionPts = rules.pointsPerReception();
+        // TE premium: tight ends earn extra per reception. Applies to TEs only, and is
+        // zero for every preset, so this branch never moves a preset's number.
+        if (position == Position.TE) {
+            receptionPts = receptionPts.add(rules.teReceptionBonus());
+        }
 
         BigDecimal total = BigDecimal.ZERO
                 // Passing
-                .add(points(stats.getPassingYards(), PASS_YARDS_PTS))
-                .add(points(stats.getPassingTd(), passTdPts))
-                .add(points(stats.getInterceptions(), INT_PTS))
+                .add(points(stats.getPassingYards(), rules.passingYardPoints()))
+                .add(points(stats.getPassingTd(), rules.passingTdPoints()))
+                .add(points(stats.getInterceptions(), rules.interceptionPoints()))
                 // Rushing
-                .add(points(stats.getRushingYards(), RUSH_YARDS_PTS))
-                .add(points(stats.getRushingTd(), RUSH_TD_PTS))
+                .add(points(stats.getRushingYards(), rules.rushingYardPoints()))
+                .add(points(stats.getRushingTd(), rules.rushingTdPoints()))
                 // Receiving
                 .add(points(stats.getReceptions(), receptionPts))
-                .add(points(stats.getReceivingYards(), REC_YARDS_PTS))
-                .add(points(stats.getReceivingTd(), REC_TD_PTS))
+                .add(points(stats.getReceivingYards(), rules.receivingYardPoints()))
+                .add(points(stats.getReceivingTd(), rules.receivingTdPoints()))
                 // Turnovers
-                .add(points(stats.getFumblesLost(), FUMBLE_LOST_PTS))
+                .add(points(stats.getFumblesLost(), rules.fumbleLostPoints()))
                 // Bonuses
-                .add(points(stats.getTwoPtConv(), TWO_PT_CONV_PTS))
+                .add(points(stats.getTwoPtConv(), rules.twoPtConvPoints()))
                 .setScale(SCALE, ROUNDING);
 
         BigDecimal ppg = calculatePpg(total, stats.getGamesPlayed());
