@@ -2807,9 +2807,14 @@ customization package → tests) plus a review-fix addendum.
   can drift from its source.
 
 **To revisit**
-- **Interception-default asymmetry:** the validator surfaces a `passingTdPoints`-null ASSUMPTION
-  but stays silent on a null `interceptionPoints`. Surface both defaults or neither — a design
-  call, and its own commit (the current boundary test quietly depends on the current behavior).
+- **Assumed-default asymmetry (surface both or neither):** the validator surfaces a
+  `passingTdPoints`-null ASSUMPTION but stays silent on a null `interceptionPoints` — and, as the
+  live runs showed, silent on *all* the prompt-supplied roster defaults (an unstated roster comes
+  back as a full 1QB/2RB/2WR/1TE/1FLEX/6-bench with zero issues, while unstated scoring is
+  flagged). Roster defaults are lower-stakes (they shift VORP, not points), so silent-default may
+  be the right call — but right now it's an accident of which fields got ASSUMPTION coverage, not
+  a decision. Decide the policy once, apply it to scoring *and* roster, its own commit (the
+  current boundary test quietly depends on the current behavior).
 - **`earliestRoundByPosition ≤ total draft length`** — a stronger cross-field check, deliberately
   *not* taken to avoid coupling the tactics validator to the engine-bound `RosterSpec` across the
   authority split. Reconsider if a real user hits it.

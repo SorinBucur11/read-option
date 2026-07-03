@@ -380,9 +380,9 @@ which the request body never contained:
 {
   "id": 1,
   "receptionFormat": "HALF_PPR",
-  "passingTdPoints": 6.00,
-  "interceptionPoints": -2.00,
-  "teReceptionBonus": 0.50,
+  "passingTdPoints": 6,
+  "interceptionPoints": -2,
+  "teReceptionBonus": 0.5,
   "teamCount": 12, "qbSlots": 1, "rbSlots": 2, "wrSlots": 2, "teSlots": 1,
   "flexSlots": 1, "flexEligible": ["RB", "WR", "TE"], "superflexSlots": 1, "benchSlots": 6,
   "playoffTeams": 6, "playoffStartWeek": 15, "playoffEndWeek": 17,
@@ -392,9 +392,15 @@ which the request body never contained:
 }
 ```
 
-`interceptionPoints: -2.00` and `teReceptionBonus: 0.50` are the resolver's
+`interceptionPoints: -2` and `teReceptionBonus: 0.5` are the resolver's
 registry values; the spec carried only `interceptionPoints: null` and
 `tePremium: true`.
+
+Scale caveat: the response serializes the **pre-flush** entity, so the numbers
+appear at the resolver's scale (`6`, `-2`, `0.5`); the persisted `NUMERIC(4,2)`
+row reads back as `6.00`, `-2.00`, `0.50`. Same values, different `BigDecimal`
+scale — unequal by `equals`, equal by `compareTo`. Any future comparison of a
+freshly-confirmed config against a reloaded one must compare by `compareTo`.
 
 ### 6f. Confirm with a BLOCKING issue remaining → `409`
 

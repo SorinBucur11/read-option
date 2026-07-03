@@ -108,13 +108,19 @@ public class LeagueParsingService {
     }
 
     private String call(String userPrompt, String operation) {
+        long start = System.nanoTime();
         try {
-            return chatClient.prompt()
+            String content = chatClient.prompt()
                     .user(userPrompt)
                     .options(AnthropicChatOptions.builder().model(model).build())
                     .call()
                     .content();
+            log.info("League {} model call ({}) completed in {} ms",
+                    operation, model, (System.nanoTime() - start) / 1_000_000);
+            return content;
         } catch (RuntimeException e) {
+            log.warn("League {} model call ({}) failed after {} ms",
+                    operation, model, (System.nanoTime() - start) / 1_000_000);
             throw new LeagueParseException("model call failed during " + operation, e);
         }
     }

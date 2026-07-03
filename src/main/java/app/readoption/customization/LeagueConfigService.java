@@ -77,7 +77,14 @@ public class LeagueConfigService {
             log.warn("League parse failed", e);
             return ParseResult.of(null, List.of(parseFailureIssue()));
         }
-        return ParseResult.of(parsed, validate(parsed));
+        ParseResult result = ParseResult.of(parsed, validate(parsed));
+        // Outcome only — the description is free text up to 5000 chars; log its
+        // length, never its content.
+        log.info("League parse ({} chars) -> {} ({} blocking, {} assumption)",
+                description.length(), result.status(),
+                count(result.issues(), IssueSeverity.BLOCKING),
+                count(result.issues(), IssueSeverity.ASSUMPTION));
+        return result;
     }
 
     public ParseResult refine(ParsedLeague current, String correction, int turn) {
@@ -85,6 +92,7 @@ public class LeagueConfigService {
         if (turn > cap) {
             // The repair loop must terminate: past the cap, return the partial object
             // plus its unresolved issues — no model call.
+            log.info("League refine turn {} past cap {} — refused without a model call", turn, cap);
             List<ValidationIssue> issues = new ArrayList<>(validate(current));
             issues.add(new ValidationIssue("refine", IssueSeverity.BLOCKING,
                     "Refine turn cap (" + cap + ") reached — state the remaining details "
@@ -104,8 +112,15 @@ public class LeagueConfigService {
         }
 
         List<ValidationIssue> issues = new ArrayList<>(validate(refined));
-        issues.addAll(driftGuard.diff(current, refined));
-        return ParseResult.of(refined, issues);
+        List<ValidationIssue> drift = driftGuard.diff(current, refined);
+        issues.addAll(drift);
+        ParseResult result = ParseResult.of(refined, issues);
+        log.info("League refine turn {} -> {} ({} blocking, {} assumption, {} changed field{})",
+                turn, result.status(),
+                count(result.issues(), IssueSeverity.BLOCKING),
+                count(result.issues(), IssueSeverity.ASSUMPTION),
+                drift.size(), drift.size() == 1 ? "" : "s");
+        return result;
     }
 
     /**
@@ -120,6 +135,13 @@ public class LeagueConfigService {
         boolean blocked = issues.stream()
                 .anyMatch(issue -> issue.severity() == IssueSeverity.BLOCKING);
         if (blocked) {
+            log.info("League confirm refused — {} blocking issue{} ({}), nothing persisted",
+                    count(issues, IssueSeverity.BLOCKING),
+                    count(issues, IssueSeverity.BLOCKING) == 1 ? "" : "s",
+                    issues.stream()
+                            .filter(issue -> issue.severity() == IssueSeverity.BLOCKING)
+                            .map(ValidationIssue::field)
+                            .collect(Collectors.joining(", ")));
             throw new LeagueConfigNotReadyException(issues);
         }
 
@@ -150,6 +172,10 @@ public class LeagueConfigService {
                 .filter(issue -> !covered.contains(issue.field()))
                 .forEach(merged::add);
         return merged;
+    }
+
+    private long count(List<ValidationIssue> issues, IssueSeverity severity) {
+        return issues.stream().filter(issue -> issue.severity() == severity).count();
     }
 
     private ValidationIssue toIssue(ConstraintViolation<ParsedLeague> violation) {
