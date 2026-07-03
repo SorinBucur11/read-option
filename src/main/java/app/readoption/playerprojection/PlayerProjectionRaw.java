@@ -49,8 +49,11 @@ public class PlayerProjectionRaw implements Persistable<PlayerProjectionRawId>, 
     private BigDecimal fumblesLost;
     private BigDecimal twoPtConv;
 
-    private BigDecimal adp;
-    private String adpFormat;
+    // Per-format ADP since V11: Sleeper (rotowire) publishes all three; ESPN has
+    // no per-format ADP, so its rows carry nulls. Observed market fact, never derived.
+    private BigDecimal adpStd;
+    private BigDecimal adpHalfPpr;
+    private BigDecimal adpPpr;
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "source_payload", columnDefinition = "jsonb")

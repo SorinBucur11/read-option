@@ -15,7 +15,6 @@ import java.util.Optional;
 public class EspnProjectionMapper {
 
     public static final String SOURCE = "espn";
-    public static final String ADP_FORMAT = "PPR";   // leaguedefaults/3 is PPR scoring
 
     private static final int SEASON_GAMES = 17;   // mirror rotowire; a season projection means a full season
 
@@ -51,8 +50,7 @@ public class EspnProjectionMapper {
                 .receivingTd(decimalStat(stats, EspnStatId.RECEIVING_TD))
                 .fumblesLost(decimalStat(stats, EspnStatId.FUMBLES_LOST))
                 .twoPtConv(null)   // ESPN two-pt not reliably mappable; see EspnStatId
-                .adp(adp(espnPlayer))
-                .adpFormat(ADP_FORMAT)
+                // Per-format ADP (V11) stays null: ESPN has no adp_std/half_ppr/ppr split.
                 .sourcePayload(serialize(entry))
                 .build();
 
@@ -76,14 +74,6 @@ public class EspnProjectionMapper {
         // would inject noise into the cross-source dispersion signal. BigDecimal.valueOf,
         // not new BigDecimal(double), to avoid binary-float artifacts.
         return v == null ? null : BigDecimal.valueOf(v).setScale(2, RoundingMode.HALF_UP);
-    }
-
-    private BigDecimal adp(EspnPlayersResponse.Player player) {
-        if (player.ownership() == null || player.ownership().averageDraftPosition() == null) {
-            return null;
-        }
-        return BigDecimal.valueOf(player.ownership().averageDraftPosition())
-                .setScale(2, RoundingMode.HALF_UP);
     }
 
     private String serialize(EspnPlayersResponse.StatEntry entry) {

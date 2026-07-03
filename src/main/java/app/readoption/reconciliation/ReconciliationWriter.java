@@ -2,7 +2,10 @@ package app.readoption.reconciliation;
 
 import app.readoption.playerprojection.PlayerProjection;
 import app.readoption.playerprojection.PlayerProjectionId;
+import app.readoption.playerprojection.PlayerProjectionRaw;
+import app.readoption.playerprojection.PlayerProjectionRawRepository;
 import app.readoption.playerprojection.PlayerProjectionRepository;
+import app.readoption.playerprojection.RotowireProjectionMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -31,11 +34,14 @@ public class ReconciliationWriter {
 
     private final PlayerProjectionRepository projectionRepository;
     private final PlayerProjectionReconciliationRepository auditRepository;
+    private final PlayerProjectionRawRepository rawRepository;
 
     public ReconciliationWriter(PlayerProjectionRepository projectionRepository,
-                                PlayerProjectionReconciliationRepository auditRepository) {
+                                PlayerProjectionReconciliationRepository auditRepository,
+                                PlayerProjectionRawRepository rawRepository) {
         this.projectionRepository = projectionRepository;
         this.auditRepository = auditRepository;
+        this.rawRepository = rawRepository;
     }
 
     /**
@@ -48,13 +54,17 @@ public class ReconciliationWriter {
                 .stream()
                 .collect(Collectors.toMap(PlayerProjection::getId, Function.identity()));
         Set<String> existingAudit = auditRepository.findPlayerIdsByYear(season);
+        Map<String, PlayerProjectionRaw> rotowireByPlayer =
+                rawRepository.findByYearAndSource(season, RotowireProjectionMapper.SOURCE)
+                        .stream()
+                        .collect(Collectors.toMap(PlayerProjectionRaw::getPlayerId, Function.identity()));
 
         List<PlayerProjection> martRows = new ArrayList<>();
         List<PlayerProjectionReconciliation> auditRows = new ArrayList<>();
         Set<String> touched = new LinkedHashSet<>();
 
         for (PlayerReconciliation result : results) {
-            martRows.add(toProjection(result.line(), existingMart));
+            martRows.add(toProjection(result.line(), existingMart, rotowireByPlayer));
 
             PlayerProjectionReconciliation audit = result.audit();
             if (existingAudit.contains(audit.getPlayerId())) {
@@ -73,7 +83,8 @@ public class ReconciliationWriter {
     }
 
     private PlayerProjection toProjection(StagedLine staged,
-                                          Map<PlayerProjectionId, PlayerProjection> existingMart) {
+                                          Map<PlayerProjectionId, PlayerProjection> existingMart,
+                                          Map<String, PlayerProjectionRaw> rotowireByPlayer) {
         ProjectionStatLine s = staged.stats();
         PlayerProjection projection = PlayerProjection.builder()
                 .playerId(staged.playerId())
@@ -93,15 +104,18 @@ public class ReconciliationWriter {
                 .twoPtConv(s.getTwoPtConv())
                 .build();
 
-        // The mart's three-format ADP comes from a separate pipeline; reconciliation
-        // only owns the stat line + provenance, so carry any existing ADP forward
-        // rather than wiping it, and mark the row existing for an UPDATE upsert.
-        PlayerProjection existing = existingMart.get(projection.getId());
-        if (existing != null) {
-            projection.setAdpStd(existing.getAdpStd());
-            projection.setAdpHalfPpr(existing.getAdpHalfPpr());
-            projection.setAdpPpr(existing.getAdpPpr());
-            projection.markExisting();
+        // ADP is an observed market fact, never derived and never verdict-following:
+        // copy the three per-format values verbatim from the rotowire raw row for every
+        // player written, regardless of route. No rotowire row (or null in raw) → null.
+        PlayerProjectionRaw rotowire = rotowireByPlayer.get(staged.playerId());
+        if (rotowire != null) {
+            projection.setAdpStd(rotowire.getAdpStd());
+            projection.setAdpHalfPpr(rotowire.getAdpHalfPpr());
+            projection.setAdpPpr(rotowire.getAdpPpr());
+        }
+
+        if (existingMart.containsKey(projection.getId())) {
+            projection.markExisting();   // upsert: UPDATE not INSERT on re-run
         }
         return projection;
     }

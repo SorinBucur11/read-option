@@ -1,7 +1,9 @@
 package app.readoption.customization;
 
+import app.readoption.scoring.LeagueSettings;
 import app.readoption.scoring.Position;
 import app.readoption.scoring.ReceptionFormat;
+import app.readoption.scoring.ScoringRules;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
@@ -93,6 +95,37 @@ public class LeagueConfig {
 
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
+
+    /**
+     * The confirmed row as the engine's resolved scoring config — the same precedent
+     * as {@link app.readoption.scoring.ScoringFormat#toScoringRules()}. Pure mapping,
+     * no defaults invented: the row was already resolved at confirm, so a null here
+     * is corruption and throws rather than silently defaulting.
+     */
+    public ScoringRules toScoringRules() {
+        if (receptionFormat == null || passingTdPoints == null
+                || interceptionPoints == null || teReceptionBonus == null) {
+            throw new IllegalStateException(
+                    "league_config " + id + " is missing resolved scoring columns — "
+                            + "a confirmed row can never have null scoring rules");
+        }
+        return ScoringRules.of(
+                receptionFormat.pointsPerReception(),
+                passingTdPoints,
+                interceptionPoints,
+                teReceptionBonus);
+    }
+
+    /** The confirmed row's roster shape as the engine's value object. Same null rule. */
+    public LeagueSettings toLeagueSettings() {
+        if (flexEligible == null) {
+            throw new IllegalStateException(
+                    "league_config " + id + " has null flex_eligible — "
+                            + "a confirmed row always carries the resolved set");
+        }
+        return new LeagueSettings(teamCount, qbSlots, rbSlots, wrSlots, teSlots,
+                flexSlots, flexEligible, superflexSlots, benchSlots);
+    }
 
     @PrePersist
     protected void onCreate() {

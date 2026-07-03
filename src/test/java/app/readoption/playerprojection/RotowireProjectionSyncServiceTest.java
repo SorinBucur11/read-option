@@ -107,14 +107,14 @@ class RotowireProjectionSyncServiceTest {
     }
 
     @Test
-    @DisplayName("adp_ppr 999 sentinel becomes null; a real value is kept")
-    void adpSentinel() {
-        // adp_ppr is index 14
+    @DisplayName("all three per-format ADPs land; the 999 sentinel becomes null per field")
+    void adpPerFormat() {
+        // adp_std=12, adp_half_ppr=13, adp_ppr=14
         when(sleeperClient.fetchProjections(2026)).thenReturn(List.of(
                 proj("UNRANKED", projData(null, null, null, null, null, null, null, null,
-                        null, null, null, null, null, null, 999.0)),
+                        null, null, null, null, 999.0, 999.0, 999.0)),
                 proj("RANKED", projData(null, null, null, null, null, null, null, null,
-                        null, null, null, null, null, null, 8.5))));
+                        null, null, null, null, 10.2, 9.1, 8.5))));
         when(playerRepository.findAll()).thenReturn(List.of(
                 Player.builder().id("UNRANKED").build(), Player.builder().id("RANKED").build()));
 
@@ -124,9 +124,12 @@ class RotowireProjectionSyncServiceTest {
                 .filter(r -> r.getPlayerId().equals("UNRANKED")).findFirst().orElseThrow();
         PlayerProjectionRaw ranked = captured.stream()
                 .filter(r -> r.getPlayerId().equals("RANKED")).findFirst().orElseThrow();
-        assertThat(unranked.getAdp()).isNull();
-        assertThat(ranked.getAdp()).isEqualByComparingTo("8.5");
-        assertThat(ranked.getAdpFormat()).isEqualTo("PPR");
+        assertThat(unranked.getAdpStd()).isNull();
+        assertThat(unranked.getAdpHalfPpr()).isNull();
+        assertThat(unranked.getAdpPpr()).isNull();
+        assertThat(ranked.getAdpStd()).isEqualByComparingTo("10.2");
+        assertThat(ranked.getAdpHalfPpr()).isEqualByComparingTo("9.1");
+        assertThat(ranked.getAdpPpr()).isEqualByComparingTo("8.5");
     }
 
     @Test

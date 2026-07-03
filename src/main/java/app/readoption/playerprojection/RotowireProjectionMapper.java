@@ -19,7 +19,6 @@ import java.math.RoundingMode;
 public class RotowireProjectionMapper {
 
     public static final String SOURCE = "rotowire";
-    public static final String ADP_FORMAT = "PPR";   // raw carries one ADP; mirror ESPN's PPR
 
     /** gamesPlayed is a season-total assumption, same as the prior direct-to-mart path. */
     private static final int SEASON_GAMES = 17;
@@ -49,8 +48,9 @@ public class RotowireProjectionMapper {
                 .receivingTd(decimal(stats.receivingTd()))
                 .fumblesLost(decimal(stats.fumblesLost()))
                 .twoPtConv(sumTwoPt(stats))
-                .adp(toAdp(stats.adpPpr()))
-                .adpFormat(ADP_FORMAT)
+                .adpStd(toAdp(stats.adpStd()))
+                .adpHalfPpr(toAdp(stats.adpHalfPpr()))
+                .adpPpr(toAdp(stats.adpPpr()))
                 .sourcePayload(serialize(projection))
                 .build();
     }
@@ -81,7 +81,7 @@ public class RotowireProjectionMapper {
         return value == null ? BigDecimal.ZERO : BigDecimal.valueOf(value);
     }
 
-    // 999 is Sleeper's "unranked" sentinel -> null (also keeps us inside NUMERIC(5,2)).
+    // 999 is Sleeper's "unranked" sentinel -> null (also keeps us inside NUMERIC(6,2)).
     private BigDecimal toAdp(Double value) {
         if (value == null || value >= 999.0) {
             return null;

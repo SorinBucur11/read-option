@@ -16,4 +16,8 @@ public interface PlayerProjectionRawRepository
 
     // all source rows for a season — the reconciliation READ phase groups these by player
     List<PlayerProjectionRaw> findByYear(int year);
+
+    // one provider's rows for a season — the reconciliation writer copies the
+    // rotowire per-format ADP verbatim onto each mart row it writes
+    List<PlayerProjectionRaw> findByYearAndSource(int year, String source);
 }

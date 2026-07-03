@@ -4,6 +4,8 @@ import app.readoption.AbstractPostgresTest;
 import app.readoption.player.PlayerRepository;
 import app.readoption.playerprojection.PlayerProjection;
 import app.readoption.playerprojection.PlayerProjectionId;
+import app.readoption.playerprojection.PlayerProjectionRaw;
+import app.readoption.playerprojection.PlayerProjectionRawRepository;
 import app.readoption.playerprojection.PlayerProjectionRepository;
 import app.readoption.playerscoring.PlayerScoring;
 import app.readoption.playerscoring.PlayerScoringRepository;
@@ -29,13 +31,14 @@ import static org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTest
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = NONE)
 @Import({ReconciliationWriter.class, PlayerScoringService.class, ScoringService.class})
-@DisplayName("ReconciliationWriter — upsert idempotency, ADP preservation, targeted re-score")
+@DisplayName("ReconciliationWriter — upsert idempotency, verbatim ADP copy, targeted re-score")
 class ReconciliationWriterIntegrationTest extends AbstractPostgresTest {
 
     private static final int SEASON = 2026;
 
     @Autowired private PlayerRepository playerRepository;
     @Autowired private PlayerProjectionRepository projectionRepository;
+    @Autowired private PlayerProjectionRawRepository rawRepository;
     @Autowired private PlayerProjectionReconciliationRepository auditRepository;
     @Autowired private PlayerScoringRepository scoringRepository;
     @Autowired private ReconciliationWriter writer;
@@ -72,20 +75,54 @@ class ReconciliationWriterIntegrationTest extends AbstractPostgresTest {
     }
 
     @Test
-    @DisplayName("existing mart ADP is carried forward, not wiped by reconciliation")
-    void preservesExistingAdp() {
-        // ADP arrived from the Phase 1 pipeline before reconciliation ran.
-        PlayerProjection existing = PlayerProjection.builder()
+    @DisplayName("per-format ADP is copied verbatim from the rotowire raw row onto the mart row")
+    void copiesAdpVerbatimFromRotowireRaw() {
+        rawRepository.saveAndFlush(PlayerProjectionRaw.builder()
                 .playerId("P1").year(SEASON).source("rotowire").gamesPlayed(17)
-                .adpPpr(new BigDecimal("12.00")).build();
-        projectionRepository.saveAndFlush(existing);
+                .adpStd(new BigDecimal("15.00"))
+                .adpHalfPpr(new BigDecimal("13.50"))
+                .adpPpr(new BigDecimal("12.00"))
+                .build());
 
         writer.write(SEASON, List.of(consensusFor("P1", new BigDecimal("1000.00"))));
 
         PlayerProjection result = projectionRepository
                 .findById(new PlayerProjectionId("P1", SEASON)).orElseThrow();
-        assertThat(result.getSource()).isEqualTo("consensus");          // provenance overwritten
-        assertThat(result.getAdpPpr()).isEqualByComparingTo("12.00");   // ADP preserved
+        assertThat(result.getSource()).isEqualTo("consensus");   // provenance from the verdict path
+        assertThat(result.getAdpStd()).isEqualByComparingTo("15.00");
+        assertThat(result.getAdpHalfPpr()).isEqualByComparingTo("13.50");
+        assertThat(result.getAdpPpr()).isEqualByComparingTo("12.00");
+    }
+
+    @Test
+    @DisplayName("null in the rotowire raw row means null on the mart — stale mart ADP is not carried forward")
+    void nullRawAdpOverwritesStaleMartAdp() {
+        // Stale mart ADP from an earlier run; the current rotowire row has no ADP.
+        projectionRepository.saveAndFlush(PlayerProjection.builder()
+                .playerId("P1").year(SEASON).source("rotowire").gamesPlayed(17)
+                .adpPpr(new BigDecimal("12.00")).build());
+        rawRepository.saveAndFlush(PlayerProjectionRaw.builder()
+                .playerId("P1").year(SEASON).source("rotowire").gamesPlayed(17)
+                .build());
+
+        writer.write(SEASON, List.of(consensusFor("P1", new BigDecimal("1000.00"))));
+
+        PlayerProjection result = projectionRepository
+                .findById(new PlayerProjectionId("P1", SEASON)).orElseThrow();
+        assertThat(result.getAdpPpr()).isNull();
+        assertThat(result.getAdpStd()).isNull();
+    }
+
+    @Test
+    @DisplayName("a player with no rotowire raw row lands with all three ADP columns null")
+    void noRotowireRowMeansNullAdp() {
+        writer.write(SEASON, List.of(consensusFor("P2", new BigDecimal("800.00"))));
+
+        PlayerProjection result = projectionRepository
+                .findById(new PlayerProjectionId("P2", SEASON)).orElseThrow();
+        assertThat(result.getAdpStd()).isNull();
+        assertThat(result.getAdpHalfPpr()).isNull();
+        assertThat(result.getAdpPpr()).isNull();
     }
 
     @Test

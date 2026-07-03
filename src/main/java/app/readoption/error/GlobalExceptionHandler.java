@@ -1,6 +1,11 @@
 package app.readoption.error;
 
+import app.readoption.customization.LeagueConfigNotFoundException;
 import app.readoption.customization.LeagueConfigNotReadyException;
+import app.readoption.draft.DraftSessionNotActiveException;
+import app.readoption.draft.DraftSessionNotFoundException;
+import app.readoption.draft.InvalidDraftRequestException;
+import app.readoption.draft.PlayerAlreadyDraftedException;
 import app.readoption.espn.EspnUnavailableException;
 import app.readoption.player.PlayerNotFoundException;
 import jakarta.validation.ConstraintViolation;
@@ -72,6 +77,51 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         pd.setTitle("League Config Not Ready");
         pd.setType(URI.create("https://readoption.app/problems/league-config-not-ready"));
         pd.setProperty("issues", ex.getIssues());
+        return pd;
+    }
+
+    @ExceptionHandler(DraftSessionNotFoundException.class)
+    public ProblemDetail handleDraftSessionNotFound(DraftSessionNotFoundException ex) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
+        pd.setTitle("Draft Session Not Found");
+        pd.setType(URI.create("https://readoption.app/problems/draft-session-not-found"));
+        return pd;
+    }
+
+    @ExceptionHandler(DraftSessionNotActiveException.class)
+    public ProblemDetail handleDraftSessionNotActive(DraftSessionNotActiveException ex) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        pd.setTitle("Draft Session Not Active");
+        pd.setType(URI.create("https://readoption.app/problems/draft-session-not-active"));
+        pd.setProperty("status", ex.getStatus().name());
+        return pd;
+    }
+
+    @ExceptionHandler(PlayerAlreadyDraftedException.class)
+    public ProblemDetail handlePlayerAlreadyDrafted(PlayerAlreadyDraftedException ex) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        pd.setTitle("Player Already Drafted");
+        pd.setType(URI.create("https://readoption.app/problems/player-already-drafted"));
+        pd.setProperty("playerId", ex.getPlayerId());
+        if (ex.getOverallPickNo() != null) {
+            pd.setProperty("overallPickNo", ex.getOverallPickNo());
+        }
+        return pd;
+    }
+
+    @ExceptionHandler(LeagueConfigNotFoundException.class)
+    public ProblemDetail handleLeagueConfigNotFound(LeagueConfigNotFoundException ex) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
+        pd.setTitle("League Config Not Found");
+        pd.setType(URI.create("https://readoption.app/problems/league-config-not-found"));
+        return pd;
+    }
+
+    @ExceptionHandler(InvalidDraftRequestException.class)
+    public ProblemDetail handleInvalidDraftRequest(InvalidDraftRequestException ex) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
+        pd.setTitle("Invalid Draft Request");
+        pd.setType(URI.create("https://readoption.app/problems/invalid-draft-request"));
         return pd;
     }
 
