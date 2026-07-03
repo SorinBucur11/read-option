@@ -35,8 +35,18 @@ injecting prior-season actuals moved the model from 94% abstention to a
 discriminating distribution with reasoning auditable down to the retrieved fact
 that moved each verdict.
 
-Next up: **Phase 3 — user customization** (natural-language tactics → structured
-scoring rules).
+**Phase 3 — Natural-language league customization: built.** A user describes
+their league and draft style in plain English; an LLM parses it into a
+validated spec (`parse → refine → confirm`); a deterministic resolver turns the
+spec into the engine's scoring config; confirm persists it. The LLM translates
+intent to structure and never originates a scoring number — the TE-premium
+bonus and preset defaults live only in the resolver's registry, and the parse
+types give the model no field to write a number into. Full walkthrough, class
+map, and copy-pasteable curl examples:
+**[docs/phase-3-overview.md](docs/phase-3-overview.md)**.
+
+Next up: **Phase 4 — AI draft assistant** (agent with tool calling, real-time
+recommendations, consuming the captured league config).
 
 ## What it does today
 
@@ -69,6 +79,11 @@ scoring rules).
   edge later phases will reason about.
 - **Serves** a paginated, filterable read API over the scored data, with
   RFC 9457 structured error responses and request validation.
+- **Customizes** to any league described in plain English: an LLM parses the
+  description into a validated spec, a stateless repair loop
+  (`parse → refine → confirm`) surfaces blocking issues and drift, and a
+  deterministic resolver produces the persisted league config — see
+  [docs/phase-3-overview.md](docs/phase-3-overview.md).
 
 ## Reconciliation in one paragraph
 
@@ -87,8 +102,8 @@ path), phased so no database transaction is ever held across a model call.
 
 - Java 17
 - Spring Boot 3.5.14
-- **Spring AI 1.1.6 (Anthropic Claude)** — used in Phase 2 for structured-output
-  verdict classification
+- **Spring AI 1.1.6 (Anthropic Claude)** — structured-output verdict
+  classification (Phase 2) and league-description parsing (Phase 3)
 - PostgreSQL 16 + pgvector (Docker)
 - Spring Data JPA + Hibernate
 - Flyway (versioned schema migration)
@@ -101,9 +116,10 @@ path), phased so no database transaction is ever held across a model call.
 
 ## Required environment variables
 
-- `ANTHROPIC_API_KEY` — required for the reconciliation verdict step (Phase 2+).
-  The dry-run calibration mode does not need it; the real reconcile run does.
-  Get one at https://console.anthropic.com
+- `ANTHROPIC_API_KEY` — required for the reconciliation verdict step (Phase 2+)
+  and for league parsing (`/api/league/parse` and `/refine` make a live model
+  call; `/confirm` does not). The dry-run calibration mode does not need it;
+  the real reconcile run does. Get one at https://console.anthropic.com
 
 ## Running
 
@@ -180,6 +196,15 @@ POST /api/projections/reconcile/{season}?dryRun={bool}
         the CV distribution for calibration without writing or calling the model;
         a real run returns a five-count report (consensus / llm / single-source /
         fallback / skipped).
+
+POST /api/league/parse      { description }
+POST /api/league/refine     { current, correction, turn }
+POST /api/league/confirm    { current }
+        Natural-language league customization (Phase 3). Stateless: the parsed
+        object rides in the payloads. parse/refine call the model and return
+        the parsed spec + validation issues + READY/NEEDS_INPUT; confirm is the
+        only writer (409 + issues while anything BLOCKING remains). Request/
+        response shapes and worked examples: docs/phase-3-overview.md.
 ```
 
 All error responses follow **RFC 9457** (`application/problem+json`): a
@@ -202,6 +227,7 @@ Schema is managed by Flyway migrations in `src/main/resources/db/migration`:
 | V7 | `player_projection_raw` | Stat columns `INTEGER → NUMERIC(7,2)` — carry fractional projections so rounding noise doesn't corrupt the cross-source dispersion signal |
 | V8 | `player_projections` | Stat columns `INTEGER → NUMERIC(7,2)` — the mart receives a real fractional source line or a median; integer columns would re-truncate |
 | V9 | `player_projection_reconciliation` | Per-player audit row (cv, route, verdict, confidence, rationale, model), **no FK** |
+| V10 | `league_config` | Confirmed league config: **resolved** scoring as typed `NUMERIC(4,2)` columns, roster columns, nullable playoff columns, `tactics JSONB`, **no FK** (no user table yet); written only by `/api/league/confirm` |
 
 Design principle: foreign keys on tables holding external source data that
 references real entities (`player_stats`, `player_projections`); no foreign key
@@ -242,7 +268,9 @@ CRUD) is not. Four test patterns:
 - [x] Phase 2 — Projections aggregator: multi-source ingestion, dispersion
   routing, LLM-assisted reconciliation grounded in prior-season actuals
   (the first retrieval step)
-- [ ] Phase 3 — User customization: natural-language tactics → structured rules
+- [x] Phase 3 — User customization: natural-language league descriptions →
+  validated spec → deterministically resolved scoring rules
+  ([walkthrough](docs/phase-3-overview.md))
 - [ ] Phase 4 — AI draft assistant: agent with tool calling, real-time recommendations
 - [ ] Phase 5 — In-season management: weekly updates, lineup decisions
 

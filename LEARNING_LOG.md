@@ -402,15 +402,15 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | Structured output | ✅ Done (Week 2 Day 4; reused Phase 2 — `BeanOutputConverter` verdict classification) |
 | System prompts | ✅ Done (Week 2 Day 5) |
 | Context management | Phase 2+ (when prompts get large with player data) |
-| Conversation memory | Phase 3 (multi-turn draft conversations) |
+| Conversation memory | ✅ Done differently (Phase 3 — multi-turn parse/refine/confirm via a **stateless typed-object carry**, not `ChatMemory`: the state is a partial `ParsedLeague` in the payload). `ChatMemory` deferred to Phase 4's genuinely conversational agent |
 | RAG (SQL-based) | ✅ Done (Phase 2 — recent actuals retrieved from `player_stats`, injected into the verdict prompt to ground role disagreements) |
-| RAG (vector-based) | Phase 3+ (scouting reports, articles) |
-| Embeddings + pgvector | Phase 3 |
+| RAG (vector-based) | Phase 4 (deferred with teams/schedule/depth-chart ingestion — news & role context) |
+| Embeddings + pgvector | Phase 4 (deferred — accompanies the vector news/role RAG) |
 | Few-shot prompting | Phase 2+ (consistent classification/ranking) |
 | Tool calling | Phase 4 (draft assistant calls my Java methods) |
 | Agent loop | Phase 4 (draft assistant reasons across multiple steps) |
 | Chain of thought | Phase 4 (explainable draft recommendations) |
-| Guardrails | Phase 3+ (system prompt constraints) |
+| Guardrails | ✅ Done in a stronger form (Phase 3 — the spec→resolver→domain **type boundary**: the LLM has no field to write a scoring number into; enforcement is the type shape, not the prompt) |
 | Streaming | Phase 4+ (responsive UI) |
 | Fantasy scoring | ✅ Done (Week 3 Day 4) |
 | Position enum | ✅ Done (Week 3 Day 4) |
@@ -419,13 +419,13 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | External projections | ✅ Done (Week 4 Day 2) — Sleeper/rotowire seasonal projections |
 | Player scoring table | ✅ Done (Week 4 Day 1) — Flyway V4, entity, repository, wired into sync |
 | Entity/DTO separation | Phase 1–2 (new entities get DTOs from start; existing refactored when touched) |
-| League settings persistence | Phase 3 (user customization) |
+| League settings persistence | ✅ Done (Phase 3 — `league_config` V10, written only by the confirm gate; resolved scoring as typed NUMERIC columns + tactics JSONB) |
 | Lombok | ✅ Done (Week 4 Day 1) — all entities refactored |
 | @PrePersist/@PreUpdate | ✅ Done (Week 4 Day 1) — JPA lifecycle callbacks for audit timestamps |
 | @Query with JPQL | ✅ Done (Week 4 Day 1) — findDistinctYears() |
 | Computed/derived tables | ✅ Done (Week 4 Day 1) — player_scoring, no FK, application-guaranteed integrity |
 | Projections table + ADP capture | ✅ Done (Week 4 Day 2) — player_projections, FK to player, per-format ADP, source provenance |
-| Parameterized scoring rules (ScoringRules) | Phase 3 (TE premium, arbitrary user formats) |
+| Parameterized scoring rules (ScoringRules) | ✅ Done (Phase 3 Commit 1 — `ScoringFormat` graduated into `ScoringRules` + `ReceptionFormat`; `Position` threaded into `ScoringService.calculate` for TE premium; six presets reproduce the regression anchors) |
 | Scoring source-routing (projections vs actuals) | ✅ Done (Week 4 Day 3) — config-driven (current-season boundary) |
 | Pagination (Page/Slice, PagedModel/VIA_DTO) | ✅ Done (Week 4 Day 4) — leaderboard |
 | Composite/assembled DTOs | ✅ Done (Week 4 Day 4) — player profile |
@@ -443,7 +443,11 @@ Reasons: each project becomes its own GitHub repo, can be made public/private in
 | Native query + projection interface | ✅ Done (Week 5 Day 1) — ranked leaderboard |
 | CTEs + rank-then-filter + SQL logical order | ✅ Done (Week 5 Day 1) |
 | Active-player filter | ✅ Done (Week 5 Day 1) — built, tested, dormant |
-| VORP / tier cliffs | Phase 3–4 — engine computes VORP, LLM reasons about cliffs |
+| VORP / tier cliffs | Phase 4 — engine computes VORP, LLM reasons about cliffs (deferred out of Phase 3) |
+| NL config parsing (spec → resolver → domain) | ✅ Done (Phase 3 — narrow LLM spec, deterministic resolver owns the flag→number registry) |
+| Object-level / cross-field validation | ✅ Done (Phase 3 — `LeagueRulesValidator` + `DraftTacticsValidator`; severity-classified, collect-all, value-bearing messages) |
+| Validate-and-repair loop (multi-turn) | ✅ Done (Phase 3 — stateless typed-object carry, turn cap, confirm gate) |
+| Refine drift guard | ✅ Done (Phase 3 — deterministic field diff; drift surfaced as ASSUMPTION) |
 
 ---
 
@@ -2621,3 +2625,244 @@ The first real LLM work in the project: projections from two providers (rotowire
 - Keep a correctness fix and a standardization refactor in separate commits — different justifications, independent reverts
 - The verdict-run iteration loop *is* the job: ship, measure the distribution, diagnose, fix the *information*, re-measure — the first run is rarely the right run
 - Disable Claude Code's `Co-Authored-By` trailer via `attribution: { commit: "", pr: "" }` in `~/.claude/settings.json` (user-global) — authorship reflects the real division of labor (own the design/review, delegate the scaffolding)
+
+---
+
+## Phase 3 — Natural-Language League Customization ✅ COMPLETE
+
+A user describes their league and draft style in plain English; an LLM parses it into a
+validated spec; a deterministic resolver turns the spec into the engine's config; the
+engine consumes it. The LLM translates intent to structure and **never originates a scoring
+number** — the same spine as Phase 2, now pointed at *configuration* instead of *classification*.
+Design owned in chat; multi-file build in Claude Code; three commits (engine refactor →
+customization package → tests) plus a review-fix addendum.
+
+### Phase 3 — What I built (concrete)
+
+- **The `ScoringFormat` graduation (Commit 1, the prerequisite refactor).** The old enum
+  bundled two independent axes (reception value + passing-TD points) into six combined
+  constants and couldn't express position-dependent rules. Split it: `ReceptionFormat`
+  (the reception axis alone), a `ScoringRules` value object (every multiplier a
+  `BigDecimal`, the old `ScoringService` constants moved onto it), and `Position` threaded
+  into `ScoringService.calculate(...)` so a TE reception bonus applies to TEs only. The six
+  formats survive as **named presets** that resolve to `ScoringRules`; they reproduce the
+  regression anchors (Barkley 208.50/226.00/243.50, Mahomes −2/INT) byte-identically.
+- **The three-type safety boundary.** `ParsedLeague` (the LLM's narrow spec: preset + flags
+  + extracted numbers) → `LeagueRulesResolver` (deterministic; owns the flag→number
+  registry) → `LeagueRules` (the resolved domain object the engine consumes). The
+  `TE_PREMIUM_BONUS = 0.5` lives only in the resolver — the model can set a `tePremium`
+  flag but has no field to write `0.5` into.
+- **The two-partition parse.** One `BeanOutputConverter<ParsedLeague>` call yields
+  `LeagueRulesSpec` (engine-bound, hard-validated) *and* `DraftTactics` (strategy-bound,
+  soft-validated, with a free-text tail). Different authorities, different destinations,
+  different validation strictness.
+- **Object-level validation + the validate-and-repair loop.** `LeagueRulesValidator` and
+  `DraftTacticsValidator` (severity-classified `ValidationIssue`s: BLOCKING vs ASSUMPTION,
+  collect-all, value-bearing messages), merged with the Jakarta annotation pass. `parse →
+  refine → confirm` over a **stateless** service — the partial `ParsedLeague` rides in the
+  payload, no `ChatMemory`. `RefineDriftGuard` diffs refine turns; a turn cap terminates the
+  loop; `confirm` is the only writer (resolves, then persists, no LLM call in the txn) and
+  refuses with 409 while anything BLOCKING remains.
+- **Persistence.** `league_config` (V10): resolved scoring as typed `NUMERIC(4,2)` columns,
+  roster columns, nullable playoff columns, `tactics` as JSONB via
+  `@JdbcTypeCode(SqlTypes.JSON)`; `IDENTITY` id, insert-only (no `Persistable`).
+- **The full test suite** (resolver/validator units, service orchestration, `@WebMvcTest`
+  slice, JSONB tactics round-trip, and the resolve-before-persist captor test) plus a
+  committed phase walkthrough at `docs/phase-3-overview.md`.
+
+### Phase 3 — What I learned
+
+- **Extraction vs. invention is a boundary you enforce with types, not prompts.** The model
+  may *transcribe* a number the user stated; it may not *invent* a number the user only
+  gestured at ("TE premium"). The enforcement isn't a well-behaved prompt — it's that the
+  spec type has no field for the invented number. A flag, not a value.
+  - **Interview line:** *"I draw the line at extraction versus invention. If the user states a number, the model transcribes it and validation clamps it; if the user states a label like 'TE premium,' the model emits a flag and a deterministic resolver maps the flag to a value from a registry. I enforce that with types, not prompt instructions — the model has no field to write the number into. A prompt is a request; a type is a guarantee."*
+
+- **"User customization" is two parse problems with different authorities, not one.** League
+  scoring is *objective config* (reported facts → the engine, hard-validated, must be exactly
+  right). Draft tactics are *subjective preferences* (→ the strategy LLM, soft-validated, no
+  correct answer). Conflating them lets a vague tactic silently rewrite how points are computed.
+  - **Interview line:** *"Natural-language customization looks like one extraction task but it's two with different authorities. Scoring rules are objective facts the engine consumes and must nail; draft tactics are preferences that steer a model and have no correct answer. I parse them into separate structures with separate validation, so a vague tactic can never rewrite the scoring."*
+
+- **How rigid a parse target must be is dictated by its consumer, and failure-cost drives
+  validation-strictness.** The rules spec has *no* free-text escape hatch because a
+  deterministic engine consumes it (prose is useless to it) and a misparse corrupts every
+  number → hard reject-and-repair. Tactics get a `freeformNotes` tail because an LLM consumes
+  them and a misread just yields slightly worse advice → soft, degrade-gracefully.
+  - **Interview line:** *"The rigidity of a parsed object is set by its consumer. Rules feed a deterministic engine, so the object is fully typed with no catch-all and rejects anything it can't resolve; tactics feed a language model, so they carry a free-text tail and degrade gracefully. Same input paragraph, opposite strictness, because the failure costs are opposite."*
+
+- **Scoring is a closed world; tactics are an open world — model each as what it is.** You can
+  enumerate every scoring dimension (finite vocabulary → exhaustively typed). You cannot
+  enumerate every way a person thinks about drafting (user-invented → a typed core plus a
+  free-text tail). A tactic *graduates* to a typed field only when a consumer that can
+  mechanically act on it exists — three tiers: closed-enum leans, parameterized constraints,
+  and the open prose tail. Stacking stays prose until Phase 4 has the teams data and
+  correlation logic to act on it.
+  - **Interview line:** *"I type the closed world and leave a structured escape hatch for the open one. Scoring has a finite vocabulary, so it's fully typed; tactics are open-ended and user-invented, so there's no complete set to enumerate. A tactic earns a typed field only when a consumer can mechanically act on it — otherwise it's a slot nothing reads. Stacking stays free text until the draft agent and team data exist."*
+
+- **Config has no safe silent fallback — so the loop is validate-and-repair, not default.**
+  Phase 2 could fall back to `TRUST_CONSENSUS` on a bad parse. Config can't: defaulting a
+  misparsed league to "standard PPR" silently misconfigures every downstream point. So a
+  failed parse surfaces as a BLOCKING issue, the user repairs, and an explicit `confirm` gate
+  is the only writer.
+  - **Interview line:** *"The right fallback depends on whether a silent default is safe. Reconciliation could default to the consensus median; league config can't, because a wrong default silently corrupts every projected number. So config parsing has no silent fallback — it surfaces the gap, asks, and only writes after an explicit confirm."*
+
+- **A config-gathering parse has three failure kinds, and they map to three loop behaviors.**
+  Structurally invalid → reject and re-ask. Missing-with-no-safe-default → block and ask.
+  Complete-but-assumption-bearing → proceed but surface the assumption. The whole product
+  quality is telling case 2 from case 3 — which user silences you can fill quietly, and which
+  you must ask about (the one field that moves every number is never filled quietly).
+  - **Interview line:** *"Validating gathered config isn't one check, it's three: invalid input gets rejected, a missing field with no safe default blocks, and a missing field with a safe default proceeds but surfaces the assumption. The quality is entirely in telling the second case from the third."*
+
+- **The validation layer should mirror the parse-target authority split — and severity-by-prefix
+  only reclassifies violations that actually fire.** A rules validator (hard) and a tactics
+  validator (soft) mirror the two partitions. But a "demote everything under `tactics.*` to
+  ASSUMPTION" rule silently passes a field that has *no constraint* — there's no violation to
+  demote. The one tactics field with a mechanical consumer (`earliestRoundByPosition`) needed
+  an explicit BLOCKING bound in the object validator, because it's the exception the prefix
+  rule can't see.
+  - **Interview line:** *"Severity-by-path-prefix is elegant but it only reclassifies violations that fire — a field with no constraint produces nothing to reclassify and passes silently. The one tactics field a deterministic consumer acts on gets an explicit blocking check in its own validator, and I mirror the parse-target authority split in the validation layer."*
+
+- **Cross-field rules are a separate programmatic layer, and the validator's message is the
+  content of the next question.** `playoffTeams ≤ teamCount` can't be an annotation. And
+  because the messages feed the repair prompt, I went programmatic and value-bearing
+  ("Playoff teams (8) cannot exceed league size (6)") and collect-all, not fail-first — the
+  model fixes everything in one refine turn only if it sees everything at once.
+  - **Interview line:** *"Field annotations validate within a field; relationships between fields need object-level validation. I made it programmatic rather than a class-level annotation because the validator's output is the content of the next question to the user — it has to name the offending values and collect every issue in one pass, which templated constraint messages can't do."*
+
+- **Multi-turn does not mean conversation memory — carry the typed object, not the transcript.**
+  The reflex is `ChatMemory` replaying prior turns. But the state here isn't a dialogue, it's a
+  partially-filled typed object; the conversation just edits it. Stateless server, object in the
+  payload → smaller context, typed (not prose) state, every turn independently testable, no
+  session store. `ChatMemory` is reserved for Phase 4's genuinely conversational agent.
+  - **Interview line:** *"The reflex for multi-turn is conversation memory, but for config gathering the state isn't the dialogue — it's a partial typed object the conversation edits. I kept the server stateless and carried the object in the payload: smaller context, typed state instead of prose, every turn testable, no session store. Match the state mechanism to what the state actually is."*
+
+- **A model handed a correction rewrites fields you didn't ask about — carrying the prior object
+  is what makes drift *detectable*.** `RefineDriftGuard` diffs before/after deterministically and
+  surfaces every change as an ASSUMPTION (never BLOCKING, so drift can't dead-lock the loop). It
+  refuses the semantic judgment of "was this asked for" — the intended change reads as
+  confirmation, anything else as drift for the user to reject.
+  - **Interview line:** *"When you re-parse a correction against existing state, the model 'helpfully' rewrites untouched fields. Because I carry the prior typed object, I can diff old against new and surface every change for confirmation. I don't ask the model to judge what the correction 'addressed' — that's the semantic call I refuse to fake; deterministic over clever."*
+
+- **`BigDecimal.equals` is scale-sensitive; `compareTo` is not — and this one fact surfaced in
+  four disguises.** `new BigDecimal("4").equals("4.0")` is false; `compareTo` is 0. Persistence
+  *normalizes scale* (a `NUMERIC(4,2)` round-trip returns `4.00`), so any equals-based comparison
+  of a persisted decimal is a latent bug. It bit the **drift guard** (a `4`→`4.0` refine read as
+  drift), the **persistence round-trip test** (asserted by `isEqualByComparingTo`, not `equals`),
+  **record equality** (`ParsedLeague` inherits scale-sensitive `equals` from its `BigDecimal`
+  field), and **Mockito argument matching** (`eq(current)` after a JSON round-trip). The
+  recurrence is what tells me it's fundamental, not incidental.
+  - **Interview line:** *"`BigDecimal.equals` compares scale and `compareTo` compares value — `4` and `4.0` are unequal by equals, equal by compareTo. It matters most around persistence, because reading a value back from a NUMERIC column normalizes its scale, so any equals-based comparison of a round-tripped BigDecimal is a latent bug. I compare decimals by value and assert by compareTo — in comparators, record equality, and argument matchers alike."*
+
+- **`Persistable` is machinery that defends against a problem the ID strategy already prevents.**
+  The upsert pattern exists to defeat Spring Data's exists-check on *assigned* IDs. With
+  `IDENTITY` generation the ID is null pre-insert, so Spring Data already treats the entity as
+  new — `Persistable` earns nothing on an insert-only table, and its `@JsonIgnore` on `getId()`
+  was even hiding the generated id from the confirm response. Cargo-culted convention; stripped it.
+  - **Interview line:** *"`Persistable` overrides Spring Data's exists-check on assigned IDs. With IDENTITY generation the ID is null before insert, so the framework already knows the entity is new — adding `Persistable` there defends against a problem the ID strategy already prevents. I strip patterns that don't earn their keep in the specific case."*
+
+- **A boundary test asserts a value that can't exist on the near side of the boundary — and you
+  verify your own test's precondition first.** Unit-testing the resolver and the persistence
+  separately doesn't test the *seam* (`confirm` persists resolved values, not the raw spec). My
+  first attempt captured the saved entity but asserted `HALF_PPR` and `-2` — values the spec
+  already carried, so it couldn't tell resolved from raw. The fix: a fixture where resolution
+  *transforms* the input (`tePremium=true` → `teReceptionBonus=0.5`, a number that exists nowhere
+  in the parse targets). And before writing the captor, confirm the path *reaches* `save` under
+  that fixture (a null passing-TD is ASSUMPTION, not BLOCKING) — else it trips the gate and
+  captures nothing.
+  - **Interview line:** *"A boundary test has to assert a value that can only exist on the far side of the boundary. My first attempt asserted values the spec already contained, so it passed whether or not resolution ran; the fix was a fixture where a TE-premium flag becomes a 0.5 bonus that exists nowhere in the parse targets. And I verify the fixture actually reaches the mocked call — a test that trips an earlier guard captures nothing and fails for the wrong reason."*
+
+- **Derived tables rebuild from source; migrations are immutable history.** I deleted
+  `league_config`'s predecessor thinking (`player_scoring`) mid-phase — recovery was a one-command
+  recompute, because a derived table's version history *is* recomputation. The incident validated
+  the "don't version derived tables" design rather than exposing a gap. You version source-of-truth
+  and mutable inputs (where the history is a feature, e.g. the reconciliation audit), not deterministic outputs.
+  - **Interview line:** *"I version source-of-truth and mutable inputs where prior state can't be regenerated; I don't version derived tables, because recomputation from source is their history. It's the warehouse rule: version the dimension, rebuild the fact."*
+
+- **Review an AI agent's diff, not its self-report.** A self-report is self-consistent by
+  construction — the agent that wrote the code wrote the summary. Across this phase I verified the
+  agent's work against something *independent* every time: the pre-recorded regression anchors for
+  the scoring refactor, the actual patch (not the narrative) for the addendum, the captured
+  argument for the boundary. The agent's own self-review even caught a `BigDecimal` drift-guard
+  consequence I'd missed — good, but I still read the diff.
+  - **Interview line:** *"I review an AI coding agent by reading the diff, not its summary — the summary is self-consistent by construction. I verify against something the agent's reasoning can't contaminate: a regression number recorded before the change, the actual patch, a captured argument. Trust the tool, verify the artifact."*
+
+**Mistakes & lessons**
+- **Special-cased `stackQbWithReceiver` as a typed boolean one message after arguing *for* the
+  free-text escape hatch.** Caught in review — an open-set tactic in a structured slot is exactly
+  what the tail exists to prevent. Lesson: the graduation rule (typed field only when a consumer
+  can act on it) applies to *me* too, mid-design.
+- **First boundary test asserted values the spec already contained** (`HALF_PPR`, `-2`) → couldn't
+  distinguish resolved from raw. Fixed with a transforming fixture (`0.5`). Testing each half of a
+  seam in isolation is not testing the seam.
+- **The review-fix addendum I wrote had a severity-misclassification hole I only half-saw**, and it
+  was the *agent's* self-review that surfaced the `BigDecimal` drift consequence of my own Fix A.
+  Lesson: blast-radius reasoning is the reviewer's core job, and I'd outsourced part of it — read
+  the second-order effects of a type change before signing off.
+- **`NUMERIC(4,1)` vs `(4,2)` inconsistency across three "points" columns** — integer inputs in
+  decimal columns of *differing* scale, the inconsistent middle. Standardized on `(4,2)` and moved
+  the spec fields to `BigDecimal` so fractional formats are expressible.
+- **Reached for "should we version the tables" after the delete** — wrong reflex. The derived
+  table's recovery *is* recomputation; adding temporal columns there stores redundant state that
+  can drift from its source.
+
+**To revisit**
+- **Interception-default asymmetry:** the validator surfaces a `passingTdPoints`-null ASSUMPTION
+  but stays silent on a null `interceptionPoints`. Surface both defaults or neither — a design
+  call, and its own commit (the current boundary test quietly depends on the current behavior).
+- **`earliestRoundByPosition ≤ total draft length`** — a stronger cross-field check, deliberately
+  *not* taken to avoid coupling the tactics validator to the engine-bound `RosterSpec` across the
+  authority split. Reconsider if a real user hits it.
+- **Phase 4 custom-league scoring — the preset short-circuit** (from `docs/phase-3-overview.md`
+  §5.1): compare a confirmed config's resolved `ScoringRules` to the six `ScoringFormat` presets
+  by `compareTo`; read precomputed `player_scoring` on a hit, re-score in-memory on a miss; never
+  write custom scores into `player_scoring` (its key is the closed format enum).
+- **Teams entity + NFL schedule ETL + depth-chart/role retriever (RAG increment 2)** — the deferred
+  "current-context ingestion" Phase 4 stacking and playoff strength-of-schedule need. The
+  depth-chart retriever is also the correctness fix for the traded-backup case reconciliation
+  can't currently adjudicate (prior actuals encode the *old* role).
+- **`ChatMemory`** for the genuinely conversational Phase 4 draft agent (deliberately unused here).
+- **Closed this phase (was a carried-forward Phase 2 item):** the JSONB persistence-path round-trip
+  test — `tacticsRoundTripsThroughJsonb` exercises the same `@JdbcTypeCode(SqlTypes.JSON)` path,
+  asserted by record equality after flush/clear.
+
+---
+
+### Phase 3 — Concepts Cheat-Sheet (additions)
+
+**Structured output for config (vs. classification)**
+- The LLM's output type is **not** the engine's input type: a narrow spec → a deterministic resolver → the domain object; the flag→number registry lives in the resolver, so the model has no field to emit a number into
+- Extraction vs. invention: transcribing a stated number is fine (clamp it); inventing an unstated one is not — that's a flag the engine resolves
+- Preset-plus-deltas keeps the LLM output narrow and auditable: a closed-enum base preset + a few flags + a few extracted numbers; never build the full rules object field-by-field
+- Two partitions from one `BeanOutputConverter` call, split by authority: engine-bound rules (hard) vs. strategy-bound tactics (soft, free-text tail)
+- Rigidity of a parse target = rigidity of its consumer; failure-cost asymmetry → validation-strictness asymmetry
+- Closed world (scoring) → exhaustively typed, no catch-all; open world (tactics) → typed core + free-text tail; graduate a field only when a mechanical consumer exists
+- No safe silent fallback for config: surface the gap, don't default (contrast Phase 2's `TRUST_CONSENSUS`)
+
+**Validation (object-level, severity, repair loop)**
+- Three failure kinds → three behaviors: invalid (reject), missing-no-default (block+ask), missing-with-default (proceed+surface assumption)
+- Cross-field rules can't be annotations; go programmatic + value-bearing + collect-all because the message *is* the next repair question
+- The validation layer mirrors the parse-target authority split (rules validator hard, tactics validator soft)
+- Severity-by-prefix only reclassifies violations that fire — an unconstrained field has nothing to demote and passes silently; give the one Tier-2 tactic an explicit bound
+- Bean Validation cascades into nested records only with `@Valid`; `@DecimalMin`/`@DecimalMax` (not `@Min`/`@Max`) for `BigDecimal`; both treat `null` as valid, so nullable-with-bounds works
+
+**Multi-turn & state**
+- Multi-turn ≠ `ChatMemory`: if the state is a partial typed object, carry it in the payload and keep the server stateless — smaller context, typed state, testable per turn
+- The loop must terminate: a turn cap that returns the partial object + unresolved issues, no model call past the cap
+- A failed repair turn must keep the prior object — never lose accumulated state on a model error
+- Refine drift is real: carry the prior object, diff deterministically, surface every change as a non-blocking ASSUMPTION; refuse the semantic "was it asked for" judgment
+- `confirm` re-validates from scratch (a prior READY proves nothing about the payload just handed over) and is the only writer
+
+**BigDecimal & persistence**
+- `equals` is scale-sensitive, `compareTo` is not; persistence normalizes scale, so equals-based comparison of a round-tripped decimal is a latent bug — it recurs in comparators, record equality, and Mockito matchers
+- Standardize `NUMERIC(p,s)` scale across columns that share a unit; move spec fields to `BigDecimal` so fractional formats are expressible
+- `Persistable` defends against the exists-check on *assigned* IDs; with `IDENTITY` it earns nothing (and its `@JsonIgnore getId()` can hide the generated id from the response) — strip patterns that don't pay in the specific case
+- JSONB via `@JdbcTypeCode(SqlTypes.JSON)` on the typed object; assert the round-trip by record equality after `flush()`+`clear()` (the `clear()` forces the read from the column, not the persistence cache)
+- Migrations are immutable history; a brand-new, unapplied migration can be edited in place, an applied one needs a follow-up `ALTER`; derived/empty tables just rebuild
+
+**Testing & AI-agent workflow**
+- A boundary test asserts a value that can only exist on the far side of the boundary (capture the entity handed to `save`; assert the resolved `0.5`, not a value the spec already carried)
+- Verify a test's own precondition — that the path reaches the mocked call under your fixture — before trusting a captor/`verify`
+- Review an agent's **diff**, not its self-report: the report is self-consistent by construction; verify against an independent artifact (a pre-recorded anchor, the actual patch, a captured argument)
+- Commit a phase-scoped architecture walkthrough (`docs/phase-N-overview.md`) separate from the README and freeze it per phase; a "drift from spec" section is where the engineering judgment shows
+- Route by blast radius; keep a correctness fix and a standardization refactor (and a fix and its defending test) in the same-or-separate commits deliberately, not by accident
