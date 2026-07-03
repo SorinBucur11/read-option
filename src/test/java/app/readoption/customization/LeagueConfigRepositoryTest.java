@@ -11,6 +11,8 @@ import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
 
 import java.math.BigDecimal;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -18,7 +20,7 @@ import static org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTest
 
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = NONE)   // real container, real V10 columns
-@DisplayName("LeagueConfig persistence — NUMERIC(4,2) scale, IDENTITY id, nullable tactics")
+@DisplayName("LeagueConfig persistence — NUMERIC(4,2) scale, IDENTITY id, JSONB tactics round-trip")
 class LeagueConfigRepositoryTest extends AbstractPostgresTest {
 
     @Autowired private LeagueConfigRepository repository;
@@ -66,6 +68,24 @@ class LeagueConfigRepositoryTest extends AbstractPostgresTest {
         assertThat(saved.getId()).isNotNull();
         assertThat(repository.findById(saved.getId())).isPresent();
         assertThat(saved.getCreatedAt()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("DraftTactics round-trips through the JSONB column typed — the Phase 2 gap closed")
+    void tacticsRoundTripsThroughJsonb() {
+        DraftTactics tactics = new DraftTactics(
+                PositionalStrategy.HERO_RB,
+                RiskPosture.UPSIDE,
+                Map.of(Position.QB, 10, Position.TE, 8),
+                List.of("stack QB with WR1", "avoid injury-prone RBs"));
+        LeagueConfig saved = repository.save(validConfig().tactics(tactics).build());
+        entityManager.flush();
+        entityManager.clear();
+
+        LeagueConfig reloaded = repository.findById(saved.getId()).orElseThrow();
+        // Record equality asserts every field survived jsonb serialize/deserialize,
+        // including the enum-keyed map and the freeform tail.
+        assertThat(reloaded.getTactics()).isEqualTo(tactics);
     }
 
     @Test

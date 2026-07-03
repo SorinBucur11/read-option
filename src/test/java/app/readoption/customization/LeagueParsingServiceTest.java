@@ -77,4 +77,49 @@ class LeagueParsingServiceTest {
                 new LeagueParsingService(builder, properties, new ObjectMapper(), missing))
                 .isInstanceOf(UncheckedIOException.class);
     }
+
+    // ----- convert() seam: structured output is best-effort, never silently defaulted -----
+
+    private LeagueParsingService service() {
+        return new LeagueParsingService(builder, properties, new ObjectMapper(),
+                new ClassPathResource("prompts/league-parser.txt"));
+    }
+
+    @Test
+    @DisplayName("well-formed model JSON converts to a ParsedLeague")
+    void convertWellFormedJson() {
+        String modelText = """
+                {"rules": {"scoring": {"basePreset": "PPR", "passingTdPoints": 6,
+                "interceptionPoints": -0.5, "tePremium": true},
+                "roster": {"teamCount": 12, "qbSlots": 1, "rbSlots": 2, "wrSlots": 2,
+                "teSlots": 1, "flexSlots": 1, "flexEligible": ["RB","WR","TE"],
+                "superflexSlots": 0, "benchSlots": 6}, "playoff": null}, "tactics": null}
+                """;
+
+        ParsedLeague parsed = service().convert(modelText);
+
+        assertThat(parsed.rules().scoring().basePreset().name()).isEqualTo("PPR");
+        assertThat(parsed.rules().scoring().interceptionPoints()).isEqualByComparingTo("-0.5");
+        assertThat(parsed.rules().scoring().tePremium()).isTrue();
+        assertThat(parsed.tactics()).isNull();
+    }
+
+    @Test
+    @DisplayName("malformed model output throws LeagueParseException — no silent default")
+    void convertMalformedOutputThrows() {
+        assertThatThrownBy(() -> service().convert("Sure! Here's your league: it has 12 teams"))
+                .isInstanceOf(LeagueParseException.class);
+    }
+
+    @Test
+    @DisplayName("an out-of-enum value throws LeagueParseException")
+    void convertOutOfEnumThrows() {
+        String modelText = """
+                {"rules": {"scoring": {"basePreset": "TRIPLE_PPR", "tePremium": false},
+                "roster": null, "playoff": null}, "tactics": null}
+                """;
+
+        assertThatThrownBy(() -> service().convert(modelText))
+                .isInstanceOf(LeagueParseException.class);
+    }
 }

@@ -1,5 +1,6 @@
 package app.readoption.customization;
 
+import app.readoption.customization.validation.IssueSeverity;
 import app.readoption.scoring.Position;
 import app.readoption.scoring.ReceptionFormat;
 import org.junit.jupiter.api.DisplayName;
@@ -48,5 +49,32 @@ class RefineDriftGuardTest {
     void nullToValueIsDrift() {
         assertThat(guard.diff(league(null, "-2"), league("4", "-2")))
                 .anyMatch(issue -> issue.field().equals("scoring.passingTdPoints"));
+    }
+
+    @Test
+    @DisplayName("identical objects produce no drift issues")
+    void identicalObjectsNoDrift() {
+        assertThat(guard.diff(league("4", "-2"), league("4", "-2"))).isEmpty();
+    }
+
+    @Test
+    @DisplayName("every drift issue is ASSUMPTION and names both values — never a dead-lock")
+    void driftIsAssumptionWithBothValues() {
+        ParsedLeague before = league("4", "-2");
+        ParsedLeague after = new ParsedLeague(
+                new LeagueRulesSpec(
+                        before.rules().scoring(),
+                        new RosterSpec(10, 1, 2, 2, 1, 1,
+                                Set.of(Position.RB, Position.WR, Position.TE), 0, 6),
+                        new PlayoffSpec(6, 15, 17)),
+                new DraftTactics(PositionalStrategy.ZERO_RB, null, null, null));
+
+        var issues = guard.diff(before, after);
+
+        assertThat(issues).extracting(i -> i.field()).containsExactlyInAnyOrder(
+                "roster.teamCount", "playoff", "tactics.positionalStrategy");
+        assertThat(issues).allMatch(i -> i.severity() == IssueSeverity.ASSUMPTION);
+        assertThat(issues).filteredOn(i -> i.field().equals("roster.teamCount"))
+                .allMatch(i -> i.message().contains("12") && i.message().contains("10"));
     }
 }
