@@ -2871,3 +2871,243 @@ customization package → tests) plus a review-fix addendum.
 - Review an agent's **diff**, not its self-report: the report is self-consistent by construction; verify against an independent artifact (a pre-recorded anchor, the actual patch, a captured argument)
 - Commit a phase-scoped architecture walkthrough (`docs/phase-N-overview.md`) separate from the README and freeze it per phase; a "drift from spec" section is where the engineering judgment shows
 - Route by blast radius; keep a correctness fix and a standardization refactor (and a fix and its defending test) in the same-or-separate commits deliberately, not by accident
+
+---
+
+## Phase 4 — AI Draft Assistant Agent (IN PROGRESS)
+
+The phase centerpiece is the shift from **pre-injection RAG** (Phases 2–3: Java decides what
+the model needs, fetches it, injects it into one call) to **agentic tool calling** (the model
+decides mid-reasoning what it needs and requests it by emitting a structured call against a
+schema my Java publishes — my code executes, the model never runs anything). The extraction-
+vs-invention boundary survives the inversion: the model went from *receiving* facts to
+*requesting* them, and it still never originates a number. Increment map: **4.1** draft domain
++ deterministic value engine (no LLM) → **4.2** the agent loop (tools, `ChatMemory`) →
+**4.3** current-context ingestion (teams/schedule/depth charts) → **4.4** vector news RAG →
+**4.5** strategy layer (stacking graduation). Ordering rationale: apply the graduation rule to
+*data* — build a retrieval increment only when a consumer has demonstrated the need — and
+deliberately re-run the Phase 2 arc: let the starved 4.2 agent fail visibly, and let the
+failure specify what 4.3/4.4 must retrieve.
+
+### Phase 4.1 — Draft Domain + Deterministic Value Engine ✅ COMPLETE
+
+The substrate the agent's most load-bearing tools will wrap: persisted draft state and a
+VORP-ranked board computed from the confirmed league's roster shape. Zero LLM code, by
+design. Three commits (ADP promotion → draft domain → valuation engine) after a four-finding
+review round.
+
+### Phase 4.1 — What I built (concrete)
+
+- **Per-format ADP promotion (Task 0 / Commit 1).** V11 swaps the raw landing table's single
+  `adp`/`adp_format` for `adp_std`/`adp_half_ppr`/`adp_ppr` (Sleeper publishes all three;
+  ESPN's lone PPR ADP dropped deliberately) and widens the mart's V5 columns to `NUMERIC(6,2)`.
+  `ReconciliationWriter` copies the three values **verbatim from the rotowire raw row** on
+  every mart write, regardless of route or verdict — ADP is observed market fact, never
+  derived, never verdict-following. Backfilled 2026: 241 draftable players carry ADP.
+- **Draft domain (V12 + `draft/` package, Commit 2).** `draft_session` (IDENTITY, frozen
+  `team_count`/`total_rounds` snapshots, status the only mutable field) + insert-only
+  `draft_pick` (composite PK `(session_id, overall_pick_no)`, `Persistable`,
+  `UNIQUE (session_id, player_id)`). `SnakeOrder` — pure 1-based snake arithmetic
+  (`teamFor`, `overallPickFor`, `nextPickFor`, `picksUntilNextTurn`), exhaustively tested
+  incl. the slot-8/T=10 gap fixture (after pick 8, next is 13; picks 9–12 belong to teams
+  9,10,10,9 — two opponents picking twice each). `DraftService`: server-assigned pick numbers
+  (the request carries only `playerId`), COMPLETE flip on the final pick via dirty checking,
+  constraint-violation-on-duplicate translated to the same 409 as the pre-check.
+  `DraftStateView`: user roster, `unfilledSlots` (greedy dedicated → FLEX → SUPERFLEX →
+  BENCH), and `gapTeams` — per-opponent positional counts for the slots picking before my
+  next turn (the survivability substrate; counts only, no player dumps — tool-result budget
+  discipline starts one increment before the tools exist).
+- **Valuation engine (`valuation/` package, Commit 3).** `LeagueConfig.toScoringRules()` /
+  `toLeagueSettings()` (pure mapping, throws on impossible nulls — never defaults);
+  `AdpBucket.forReceptionPoints` (nearest-bucket for custom rules, with an `@EnumSource`
+  invariant test proving it reproduces `ScoringFormat.adpBucket()` on all six presets);
+  `ReplacementLevelCalculator` (pure greedy absorption: dedicated starters → flex over the
+  eligible set → superflex with QB added; starters-only baseline, bench is option value left
+  to the LLM); `DraftBoardService` scoring the mart **in memory** under the league's resolved
+  rules on one uniform path (no preset short-circuit — ~400 `calculate` calls are trivial and
+  precomputation hasn't earned a read path), static pre-draft baseline (the board drains;
+  season-long scarcity doesn't), VORP-ranked rows with the format-matched ADP column.
+- **Mart hygiene.** Purged ~2800 pre-reconciliation rows the board would have ranked
+  alongside the 409 contract-correct ones — surfaced by two numbers in one report that
+  couldn't both be true (mart "3217 rows" vs. reconcile "wrote 409").
+
+### Phase 4.1 — What I learned
+
+- **VORP: value is scarcity-adjusted, not absolute.** `VORP = projected points − replacement
+  level(position)`, where replacement level is the best player *outside* the league-wide
+  startable pool — and the startable pool is a pure function of the confirmed roster shape
+  (dedicated starters + greedy flex/superflex absorption). A 340-point QB can be worth less
+  than a 260-point RB because the 11th QB is nearly free while the 21st RB is not. This is
+  where the Phase 3 config finally does load-bearing work.
+  - **Interview line:** *"Raw projections rank production; VORP ranks scarcity-adjusted value —
+    points above the best player outside the startable pool, derived deterministically from
+    the league's roster shape including greedy flex allocation. The arithmetic lives in the
+    Java engine; the LLM will reason about tier cliffs over those numbers but never computes one."*
+
+- **Snapshot vs. input — a value living in two places will eventually disagree.** The review's
+  one real design flaw: `StartDraftRequest` carried `teamCount` while the config row also
+  carried it, and nothing reconciled them — `ReplacementLevelCalculator` even received the
+  fact twice (session's count + `LeagueSettings.teams()`) with one copy dead. Every test
+  passed because every fixture happened to agree. Fix: the client names the config and its
+  slot; `teamCount` and `totalRounds` are snapshots frozen from the config at session
+  creation (like an FX rate frozen on a booked trade — the derivation's *input* can change
+  mid-draft, so the derived value is captured as a fact).
+  - **Interview line:** *"I distinguish snapshot from input: the draft session freezes
+    teamCount and totalRounds from the league config at creation — the client can't supply a
+    value the config already owns, so the draft can never disagree with its league. The tell
+    was a calculator receiving the same fact through two parameters and ignoring one; my
+    tests missed it because every fixture happened to agree."*
+
+- **The server owns the sequence; the client reports the fact.** `overall_pick_no` is
+  assigned server-side (max + 1, inside the transaction) — a client-supplied sequence number
+  invites desync (a missed entry renumbers everything after it) and races. The composite PK
+  is the concurrency backstop: simultaneous inserts computing the same next-number collide
+  and one fails cleanly — the ledger assigns its own transaction numbers.
+  - **Interview line:** *"The client reports the observed fact — who was picked; the server
+    owns the sequence inside the transaction, with the composite primary key as the
+    concurrency backstop. Same reason a ledger assigns its own transaction numbers."*
+
+- **Store the observed fact, derive the rest — and document the absence.** All 130 picks are
+  persisted (opponent rosters matter: "will he make it back to me" is *the* live-draft
+  question), but there is no `team_no` column — snake assignment is arithmetic over
+  `(overall_pick_no, team_count)`, and persisting a derivation invites drift from its source.
+  The javadoc states *why the field is absent*, which is the guard against a future
+  contributor helpfully adding it back.
+  - **Interview line:** *"I derive snake-draft team assignment from the pick number instead of
+    storing it — persisting a derivation invites drift. And I document the absence: a missing
+    column looks like an oversight unless the design says it's a decision."*
+
+- **Defense in depth, with the match done properly.** Can't-draft-twice is enforced twice
+  deliberately: a service pre-check for the friendly 409 (carrying the pick that took the
+  player), and `uq_draft_pick_player` as the final arbiter under races or a future second
+  writer. The violation match walks the cause chain to Hibernate's
+  `ConstraintViolationException` and compares `getConstraintName()` (message-grep is
+  dialect-fragile) — and the integration test proves the *precondition*: that the real
+  Postgres dialect actually populates the name the match relies on.
+  - **Interview line:** *"The application check handles the happy path and the friendly error;
+    the unique constraint guarantees the invariant under concurrency or a writer that doesn't
+    exist yet. I match violations by Hibernate's extracted constraint name, and I
+    integration-test that the dialect populates it — the assumption my match rests on."*
+
+- **Design failure modes to degrade toward noisy, not toward convincing.** Twice this
+  increment, unprompted the second time: if constraint-name extraction ever fails, a genuine
+  duplicate becomes a loud 500 rather than a plausible wrong 409; and a degenerate config
+  (`teamCount=1`) now fails on the V12 CHECK as a 500 rather than a polite request-validation
+  400 — corrupt reference data isn't the client's fault, and a 400 would misattribute it.
+  - **Interview line:** *"I design failure modes to degrade toward noisy: a failed constraint-
+    name match produces a loud 500, never a plausible wrong 409. A failed batch job is
+    recoverable; a batch job that posts wrong ledger entries is the one that survives to
+    production."*
+
+- **JPA dirty checking — mutation is the write instruction (interview detour).** The COMPLETE
+  flip has no `save()` call: the session was loaded through the repository inside the
+  `@Transactional` method, so it's *managed* — Hibernate snapshots it at load and flushes an
+  UPDATE at commit for anything that changed. The unit-of-work pattern: the transaction
+  tracks its own dirty pages. Traps on both sides: mutate a *detached* entity (transaction
+  already closed) and the change silently vanishes; mutate a managed entity you only meant to
+  read and Hibernate issues an UPDATE you never asked for.
+  - **Interview line:** *"Inside a transaction, loaded entities are managed — Hibernate
+    snapshots at load and flushes an UPDATE at commit for whatever changed, so save() on a
+    mutation is redundant. The trap is the detached side: mutate after the transaction closed
+    and nothing is written; the flip side is accidental UPDATEs from mutating an entity you
+    only meant to read."*
+
+- **Validation order follows data dependency.** Removing `teamCount` from the request moved
+  the config load ahead of the slot check (the slot's upper bound *is* a property of the
+  config), which changed an observable behavior: unknown-config + bad-slot now 404s where it
+  used to 400. The reordering is the semantically honest one; the test that previously
+  asserted "repo untouched" inverted into one documenting the dependency.
+
+- **Purge economics: rebuild a derived table when inputs or logic changed, not to reassure
+  yourself.** The stale mart rows were purged without re-reconciling — the 409 survivors
+  *were* yesterday's run over the current raw data, so a re-run would re-spend ~128 model
+  calls to reproduce the same lines modulo verdict noise. And the purge didn't shrink the
+  data so much as make the contract true: "reconciliation is the only writer" went from
+  documentation to an observable property of the table.
+  - **Interview line:** *"I purged stale pre-contract rows without recomputing — the survivors
+    were already the current pipeline's output over the current inputs. Rebuild a derived
+    table when its inputs or logic changed, not to reassure yourself."*
+
+- **Size the load before designing around it.** The persistence-cadence worry (a pick every
+  60–90s) dissolved on arithmetic: ~0.02 inserts/second against a database comfortable at
+  tens of thousands — nine orders of magnitude of headroom. Phase 4's real latency pressure
+  is the *agent's sequential tool-call loop* (multiple model round-trips per advice request
+  while I'm on the clock), and that's where the design budget goes in 4.2.
+
+- **Diff-vs-report, twice more.** (1) The agent claimed the mart had ADP columns "since V5,
+  never populated" — the *deleted lines* proved it: the removed carry-forward code called
+  `existing.getAdpStd()`, which can't compile against an entity lacking the field. Removed
+  code corroborates independently of the narrative. (2) The mart-count discrepancy (3217 vs.
+  409 written) was caught because two numbers in the same report couldn't both be true — the
+  number that doesn't reconcile with its neighbor *is* the finding.
+
+### Phase 4.1 — Mistakes & lessons
+
+- **I put `teamCount` in the request DTO** — created the dual-source flaw the review round
+  had to catch. The design conversation had even settled the principle for `totalRounds`;
+  I failed to apply it to the fact sitting next to it. Lesson: when you freeze one config
+  fact into a session, audit every *other* request field against the same rule.
+- **Finding 1 initially went unreported in the fix round.** Findings 2–4 came back with
+  evidence; the one marked "fix before commit 2" — the only one changing runtime numbers —
+  was silent, and surfaced only when the reviewer asked. Lesson: a review loop where three of
+  four items return with evidence trains everyone to assume the fourth did too; track
+  findings as an explicit checklist and report each closed-or-open, never narratively.
+- **The spec assumed ~310 mart rows** — that was the dual-source subset, not the mart. The
+  wrong assumption was harmless here but it's the same class of error as the teamCount flaw:
+  a number carried from memory instead of read from the system.
+
+### Phase 4.1 — To revisit
+
+- **Concurrent-pick PK collision** (`TODO(4.x)` on the catch block): two simultaneous
+  `recordPick` calls collide on the composite PK — correctly *not* matched as a duplicate-
+  player 409, so one caller 500s. Acceptable single-writer; translate to retry-once or a 409
+  "pick number contended" when the Sleeper live-draft sync becomes a second writer.
+- **Leaderboard row-count change (documented, deliberate):** projection-scored players for
+  2026 dropped ~3200 → 409 with the mart purge. Not a regression — the contract became true.
+  Recorded here so future-me doesn't rediscover it as a "data loss bug."
+- **Preset short-circuit stays deferred** (decision recorded against phase-3-overview §5.1):
+  in-memory scoring is one uniform path for preset and custom leagues; precomputation earns
+  its complexity only when a read path exists where it pays.
+- **Four ranked-but-sub-floor ADP rows** (K/DST-shaped) left with the purge — in scope only
+  if K/DST ever enter the board.
+- **Next: 4.2 — the agent loop.** Raw tool-calling exercise first (own the loop without
+  Spring AI in the room), then `@Tool` + `ChatClient` over the 4.1 substrate, `ChatMemory`
+  off the bench, tool contracts as compact DTOs (the `DraftStateView`/`DraftBoardView` shapes
+  were the dry run), loop caps and token-growth discipline.
+
+### Phase 4.1 — Concepts Cheat-Sheet (additions)
+
+**Tool calling (the Phase 4 shift)**
+- Pre-injection RAG: Java decides what the model needs *before* the call; agentic tool
+  calling: the model requests it *mid-reasoning* via a structured call against a published
+  schema — Java executes, the model never runs code and still never originates a number
+- The tradeoff: latency and loop control bought context efficiency — a draft turn can't
+  pre-load 400 players, and the answer's context isn't knowable until reasoning starts
+- Tool results re-enter the context, so tools return compact DTOs (counts and numbers, no
+  entity dumps) — budget discipline starts in the DTO design, one increment before the tools
+
+**Draft/valuation math**
+- VORP = points − replacement level; replacement level = best player outside the startable
+  pool; startable pool = dedicated starters + greedy flex/superflex absorption over the
+  flex-eligible set; starters-only baseline (bench is option value = LLM judgment)
+- Static pre-draft baseline: the board drains during a draft, season-long scarcity doesn't
+- Snake arithmetic: round `r = ceil(p/T)`; odd rounds forward, even reversed; team-for-pick
+  is derived, never stored; the turn slots pick back-to-back (survivability is concentrated)
+- ADP is observed market fact: copied verbatim per format, never derived across formats,
+  never verdict-following; custom rules map to the nearest published bucket by `compareTo`
+
+**Persistence & transactions**
+- Snapshot vs. input: freeze config-owned facts into the session at creation; never accept
+  them from the client; a value in two places will eventually disagree
+- Server-assigned sequencing inside the transaction; composite PK as the concurrency backstop
+- Dirty checking: managed entities flush their mutations at commit — no save() needed; the
+  detached-entity trap on one side, accidental UPDATEs on the other
+- Constraint matching: walk the cause chain to Hibernate's `ConstraintViolationException`,
+  compare `getConstraintName()`, and integration-test that the dialect populates it
+- Failure modes degrade toward noisy (loud 500) rather than convincing (plausible wrong 409)
+
+**Process**
+- Track review findings as an explicit checklist; report each closed-or-open, never narratively
+- Deleted code corroborates a claim independently of the narrative; two numbers in one report
+  that can't both be true are the finding
+- Rebuild derived data when inputs or logic changed, not for reassurance
