@@ -3111,3 +3111,424 @@ review round.
 - Deleted code corroborates a claim independently of the narrative; two numbers in one report
   that can't both be true are the finding
 - Rebuild derived data when inputs or logic changed, not for reassurance
+
+### Phase 4.2 — The Agent Loop, Part 1: Raw Tool-Calling Exercise ✅ COMPLETE
+
+Phase 0 discipline applied to agents: own the tool-calling loop by hand before letting Spring
+AI own it. Two files in `claude-playground`, tools implemented as HTTP calls against my
+*running* read-option instance — real data, zero product code touched, the whole `stop_reason:
+tool_use → tool_result → repeat` cycle experienced with my own eyes. The point was never to
+ship this; it was to make "an agent" concrete so the framework never becomes magic.
+
+### Phase 4.2 (raw loop) — What I built (concrete)
+
+- **`ReadOptionApiClient`** — a thin `java.net.http` client wrapping three read-option
+  endpoints (state, board, profile) as callable tools, returning a `ToolResult(String content,
+  boolean isError)` record. Two scope facts are **constructor-bound, never tool parameters**:
+  `sessionId` and `scoringFormat`. Non-200 and unreachable-host both map to
+  `ToolResult(..., isError=true)` — the failure becomes data for the model, not an exception
+  for Java.
+- **`AgentLoop`** — the hand-written loop: a `TOOLS_JSON` schema string (hand-authored JSON
+  Schema, the thing Spring AI will later generate from method signatures), `callClaude` posting
+  the accumulated transcript, a `stop_reason` switch (`end_turn` → done, `tool_use` → dispatch,
+  anything else → throw), an inner `for` over the response's content blocks that collects **all**
+  `tool_use` blocks and returns **all** their results in **one** batched `user` message, an
+  `is_error: true` field on failed results, a `MAX_ITERATIONS` cap that throws loud, and
+  per-iteration logging of stop reason, input/output tokens, cumulative input tokens, and
+  latency.
+- **Test method: three prompts, ascending complexity.** (1) "Who should I pick now?" — expect
+  state+board in parallel. (2) "TE now or wait?" — expect gapTeams survivability reasoning.
+  (3) "Compare the two best RBs in detail" — expect **multiple `tool_use` blocks in one
+  response** (two `get_player_profile` in parallel), the case the batching exists for.
+
+### Phase 4.2 (raw loop) — What I learned
+
+- **An agent is a `while` loop with a `switch` inside — the demystification.** No hidden state
+  machine, no framework magic: send transcript, read `stop_reason`, if `tool_use` then dispatch
+  by name and append results, repeat until `end_turn`. Having typed the loop, every interview
+  question about agent internals is now a question about code I've written.
+  - **Interview line:** *"An agent loop is a while loop over the model's stop_reason: on
+    tool_use I dispatch the requested calls, append the results, and re-send; on end_turn I
+    stop. The model never runs code — it emits a structured request against a schema I publish,
+    my Java executes it, and the result re-enters the context. Frameworks automate this loop;
+    they don't change its shape."*
+
+- **Parallel `tool_use` blocks return in ONE batched `user` message — the load-bearing
+  mechanic.** A single assistant response can carry several `tool_use` blocks (the model
+  requesting state and board, or two profiles, at once). All their `tool_result` blocks must go
+  back in **one** `user` message, each keyed to its `tool_use_id`. Returning them one-at-a-time
+  in separate messages breaks the protocol. Proven live: run 3 fired two blocks on iter 1 and
+  two on iter 2, and the loop consumed each pair correctly — including under partial failure,
+  where both parallel profile calls errored and both `is_error` results came back batched and
+  the model continued.
+  - **Interview line:** *"One model turn can request several tools at once, and their results
+    must return in a single user message, each tagged with its tool_use_id — not sequentially.
+    I proved my loop batched correctly even when both parallel calls failed: the parallel path
+    and the error path composed on the first try, because both are just 'collect every block,
+    answer every block'."*
+
+- **Tool results re-enter under the `user` role — there is no third role.** The protocol models
+  my executing Java as the "user" answering the model's question. That framing is *why* the
+  transcript grows: every round trip re-sends the entire accumulated history, tool results
+  included.
+  - **Interview line:** *"Tool results aren't a separate channel — they re-enter as a user
+    message. The wire protocol has two roles; my code plays 'user' when it answers the model's
+    tool request. That's also why context grows every iteration: the whole transcript, results
+    and all, is resent each round trip."*
+
+- **Token growth is driven by tool-result size, and it's a per-round-trip tax, not a one-time
+  cost — quantified.** Same prompt shape, two board sizes: a 20-row default board pushed iter-2
+  input to 2217 tokens; a 2-row board pushed it to 1514 — the ~700-token gap *is* the 18 extra
+  rows. Because the transcript resends every turn, an oversized tool result inflates the floor
+  for the rest of the conversation. Run 3's entire 3-iteration transcript (cumulative 4652) was
+  barely larger than run 1's 2-iteration one (3200) — the small board bought a whole extra
+  round trip for almost free. This is the compact-DTO discipline proven with numbers.
+  - **Interview line:** *"An oversized tool result isn't a one-time cost — the transcript
+    resends every iteration, so a 20-row board versus a 2-row board is a tax paid on every
+    subsequent round trip. Compact tool DTOs and sane default limits are token-budget
+    engineering; I measured the delta rather than asserting it."*
+
+- **`is_error: true` degrades toward noisy at the reasoning layer — the model refuses to
+  fabricate.** I killed read-option mid-loop (between iter 1 and 2 of the RB comparison). Both
+  profile calls returned `is_error: true`; the loop continued instead of crashing; and the
+  model **opened with the missing data** ("detailed profiles are unavailable — server error on
+  both"), fell back to the board data it still had, and quarantined the lost pieces under an
+  explicit "cannot confirm" list rather than inventing profile stats. Same loud-failure
+  asymmetry proven at the persistence layer in 4.1 (loud 500 over wrong 409), now proven at the
+  reasoning layer: the gap is visible in the answer, not papered over with a plausible number.
+  - **Interview line:** *"I surface tool failures to the model as an error result, not a Java
+    exception — is_error: true re-enters the context so the model can react. I killed the
+    backing service mid-loop; the agent announced the missing data, fell back to what it had,
+    and refused to fabricate the stats it lost. A model that invents numbers when a tool fails
+    is the agentic equivalent of a batch job posting wrong ledger entries."*
+
+- **Scope facts are Java-owned, not tool parameters — snapshot-vs-input at the tool contract
+  layer.** `sessionId` and `scoringFormat` are bound in the client constructor; the model has
+  no field to write them into. If `format` were a tool parameter the model could fetch a player
+  under one scoring format while the board it just read used another — two "projected points"
+  for the same player, disagreeing, inside one context. Same single-source rule from the
+  `teamCount` fix, applied to the tool surface: the caller (here, the model) can't supply a
+  fact the session already owns.
+  - **Interview line:** *"Identity and scope facts — sessionId, scoring format — are bound
+    server-side, never exposed as tool parameters. The model requests data; it doesn't get to
+    choose which league or which format that data is scored under. It's the snapshot-vs-input
+    rule pushed down to the tool contract: no field for the caller to write a fact the session
+    already owns."*
+
+- **Survivability is counted in picks, not opponents — the wheel folds two picks into one gap
+  entry.** Live state verified the snake arithmetic: team 8 in a 12-team league, state at
+  overall pick 12, `picksUntilUserNextTurn = 5`. The gap is picks 12–16 (my next is 17), and
+  `gapTeams` encodes it as team 12 with `picksInGap: 2` (both sides of the wheel) plus teams
+  11, 10, 9 at 1 each — four *entries*, five *picks*. A naive "distinct teams in the gap" would
+  miscount the board drain as four. The DTO counts picks because that's the denominator that
+  matters: how many players leave the board before my turn.
+  - **Interview line:** *"The team at the snake turn drafts back-to-back, so a four-opponent gap
+    can be five picks of board drain. My gap DTO counts picks, not managers, and folds the wheel
+    team's two selections into one entry with a pick count — because survivability is about how
+    many players leave the board before my next turn, not how many distinct people pick."*
+
+- **Never read latency off a profiler/debugger run.** Run 3's iter-1 logged 120,110 ms; the
+  same call clean-ran in ~2.3 s. The 120 s was the async-profiler + debugger launch
+  (`suspend=y`, JFR wall-clock sampling), not real latency. Clean runs showed the true shape:
+  first call cheap (~2.3–3.4 s), later calls slower as output grows and the transcript enlarges.
+  - **Interview line:** *"One of my latency numbers was 120 seconds on a call that clean-runs in
+    two — it was measured under the profiler. Observability that changes the thing it measures
+    is worse than none; I read latency under production launch conditions, not under the
+    debugger."*
+
+- **Extraction-vs-invention held under pressure — a legitimate inference is not a
+  fabrication.** In the RB comparison the model inferred "injury-shortened seasons" from
+  `gamesPlayed` values of 7 and 4 — an inference *from data it had*, not invention — and still
+  flagged current injury status, depth-chart role, and 2026 news as explicitly missing. The
+  boundary isn't "never infer"; it's "never originate a fact the data can't support," and it
+  held even when the answer wanted more than the data offered.
+
+- **Honest starvation is the requirements list for 4.3/4.4 — captured verbatim.** Every run
+  named what it lacked instead of inventing it: *"I don't have current injury status, depth
+  chart updates, or 2026 offseason news."* That sentence, produced by a deliberately
+  information-starved agent, *is* the spec for 4.3 (SQL retrievers: teams, schedule, depth
+  charts) and 4.4 (vector news RAG). The Phase 2 arc re-ran on purpose: let the starved agent
+  fail visibly, and let the failure specify what to retrieve next.
+
+### Phase 4.2 (raw loop) — Mistakes & lessons
+
+- **I launched run 3 under the profiler and briefly believed a 120-second latency.** Caught it
+  only by diffing the JVM args against the clean runs. Lesson: capture the launch conditions
+  alongside the numbers, or a measurement artifact reads as a finding.
+- **Bare `null` in the error message.** `e.getMessage()` on a `ConnectException` is often null,
+  so the model (and my log) saw `read-option unreachable: null`. Cosmetic in the playground, but
+  the product client should fall back to the exception class name
+  (`e.getClass().getSimpleName() + ": " + e.getMessage()`) so a failure is never nameless.
+- **I ran on the `STANDARD_6PT` format default instead of wiring the format explicitly.** Safe
+  *only because* my test league resolves to standard scoring — the profile numbers and the board
+  numbers happened to be on the same scale. In a PPR/custom league that default would silently
+  hand the model two disagreeing point scales inside one comparison table, with no error firing.
+  That's the quiet cousin of the `teamCount` flaw: not a value in two places, but a fact (the
+  league's format) with a silent fallback that masks its own absence. Playground-acceptable;
+  a real risk on the agent data path.
+- **"No logs in read-option" ≠ tools didn't run.** Spring Boot doesn't log requests by default;
+  the console `tool_use` lines plus internally-consistent 2-decimal VORP values (McCaffrey
+  127.12, St. Brown 89.84) were the proof the calls landed. The playground console *was* the
+  observability this run — which is itself the argument for adding request logging on the
+  tool-serving endpoints in the product build.
+
+### Phase 4.2 (raw loop) — To revisit / carried into the product spec
+
+- **Player-detail tool must score under the session's resolved rules — no format default on the
+  agent data path.** The public `/profile` endpoint keeps its human-friendly `STANDARD_6PT`
+  default; the agent's tool wraps a league-aware service method that takes the resolved rules as
+  a **required** argument. Two contracts over the same data, each honest for its caller. (Also:
+  the preset-keyed profile can't exactly match a *custom* league's board — another reason the
+  tool wraps the service, not the controller.)
+- **Exception-name fallback in the error result** — no bare `unreachable: null`.
+- **Request logging on read-option's tool-serving endpoints** — so the agent path is observable
+  from both ends: the loop logs the `tool_use`, read-option logs the request it received. When
+  the two disagree, I want both sides of the wire.
+- **Output-shape constraint in the product system prompt** — the raw loop returned heavy
+  markdown with emoji headers; fine for a console smoke test, wrong for a fast "on the clock"
+  conversational turn.
+- **Next in 4.2:** the 30-minute Spring AI default-execution spike (same three tools via
+  `@Tool`, internal execution on — watch the schema, the parsing, and the loop all disappear and
+  name what the framework took over), then the product build in read-option (user-controlled
+  execution via `internalToolExecutionEnabled(false)` / `ToolCallingManager`, hybrid
+  pre-injection context, per-session message-window `ChatMemory`) — with a five-minute
+  verification of the 1.1.6 tool-API signatures before any spec is written.
+
+### Phase 4.2 (raw loop) — Concepts Cheat-Sheet (additions)
+
+**The agent loop (owned by hand)**
+- An agent is a `while` loop over `stop_reason`: `tool_use` → dispatch + append results + resend;
+  `end_turn` → stop; anything else → throw. Frameworks automate the loop, not its shape
+- Tool results re-enter under the `user` role — there is no third role; my executing Java plays
+  "user" when it answers the model's tool request
+- One assistant turn can carry **multiple** `tool_use` blocks (parallel); **all** results return
+  in **one** batched `user` message, each keyed to its `tool_use_id` — sequential return breaks
+  the protocol. The parallel path and the error path are the same code: answer every block
+- Tool failures return as `tool_result` with `is_error: true` (data the model reacts to), not as
+  Java exceptions (reserved for protocol failures — non-200 from the API, loop cap)
+- A `MAX_ITERATIONS` cap that throws loud is the backstop against a model that never reaches
+  `end_turn`
+
+**Token economics of tool calling**
+- The transcript resends every iteration, so tool-result size is a **per-round-trip tax**, not a
+  one-time cost — a 20-row vs 2-row board was a ~700-token/iteration difference, empirically
+- Compact tool DTOs and sane default limits are token-budget engineering; measure the delta,
+  don't assert it
+- Latency lives in the sequential round trips, not the DB; never measure it under a
+  profiler/debugger launch (a 2 s call read as 120 s)
+
+**Tool contract discipline**
+- Scope/identity facts (sessionId, scoring format) are server-bound, never tool parameters —
+  snapshot-vs-input pushed down to the tool surface; the model requests data, it doesn't choose
+  the league or format that data is scored under
+- Survivability counts **picks, not opponents** — the snake wheel folds a turn team's two picks
+  into one gap entry with a pick count; distinct-teams would undercount board drain
+- Extraction-vs-invention holds under pressure: inferring from data you have (games played →
+  shortened season) is legitimate; originating a fact the data can't support is not — and the
+  model still flags what it genuinely lacks
+- A deliberately starved agent's "I don't have X" is not a defect to suppress — it's the
+  verbatim requirements list for the next retrieval increment
+
+### Phase 4.2 — The Agent Loop, Part 2: Spring AI Default-Execution Spike ✅ COMPLETE
+
+A 30-minute throwaway spike in `spring-ai-playground`, run *immediately after* the raw
+loop so the contrast was fresh. Same three tools, same three prompts, same system prompt —
+but this time the tools are `@Tool`-annotated methods handed to a `ChatClient` with
+**internal (default) tool execution left on**. The entire deliverable is the *understanding*
+of what the framework took over, and — more sharply — what it hid. Deliberately the
+opposite configuration from the product build (which disables internal execution); the
+spike exists to make the trade-off felt before it's chosen.
+
+### Phase 4.2 (spike) — What I built (concrete)
+
+- **`DraftTools`** — a plain class (not a Spring bean) with three `@Tool`-annotated methods
+  wrapping the same read-option endpoints. `sessionId` and `scoringFormat` are
+  **constructor fields, not method parameters** — see the field-vs-parameter lesson below.
+  Tool errors returned as a plain `"ERROR ..."` string (with the exception-class-name
+  fallback lesson carried from the raw loop), not thrown.
+- **`SpikeRunner`** — a `CommandLineRunner` that builds a `ChatClient` from the injected
+  `ChatClient.Builder` (`.defaultSystem(...)`, `.defaultAdvisors(new SimpleLoggerAdvisor())`),
+  then fires the three prompts, printing `.content()` and aggregate token usage per prompt.
+- **Config plumbing:** `server.port=8081` (the Boot app's own Tomcat collided with
+  read-option on 8080), `logging.level.org.springframework.ai.chat.client.advisor=DEBUG`
+  to surface the advisor logs, plus the Spring AI bump to **1.1.8** (CVE patch — see below).
+
+### Phase 4.2 (spike) — What I learned
+
+- **The whole hand-written loop collapses into `.tools(obj).call()`.** Everything I typed in
+  the raw loop — the `TOOLS_JSON` schema, the `callClaude` HTTP plumbing, the `stop_reason`
+  switch, the content-block extraction, the `tool_result` batching, the `messages`
+  accumulation, the `for` + `MAX_ITERATIONS` cap — is gone, replaced by attaching a tool
+  object to the prompt. The framework's `ToolCallingAdvisor`/`ToolCallingManager` runs the
+  recursive loop internally.
+  - **Interview line:** *"Spring AI's default tool execution is the CrudRepository of agent
+    loops — I annotate methods, hand the object to the ChatClient, and the framework runs
+    the whole multi-round-trip loop. Every piece I hand-wrote in the raw exercise — schema,
+    stop_reason switch, result batching, the loop itself — becomes framework-internal. It's
+    perfect until the day I need to see the SQL."*
+
+- **The schema is generated from the method signature — drift killed by construction.** In
+  the raw loop the `TOOLS_JSON` was a second source of truth alongside my Java, free to
+  drift. `@Tool`/`@ToolParam` make the **signature the schema**, so they cannot disagree —
+  the same move as the Phase 3 spec→resolver type boundary and the Phase 4.1 snapshot rule,
+  now applied to the tool contract. `@ToolParam` params are required by default; nullable →
+  optional.
+  - **Interview line:** *"A hand-written tool schema is a dual source of truth with the Java
+    method it describes — they drift. Spring AI generates the schema from the method
+    signature, so the schema and the code are the same artifact. It's the same drift-killing
+    move as freezing a config fact as a snapshot: one owner, enforced by structure, not
+    discipline."*
+
+- **`@Tool` turns every parameter into schema — so server-owned facts must be FIELDS, not
+  parameters.** This is the Spring AI-specific mechanism for the same rule I've applied
+  since Phase 3. If `sessionId` or `scoringFormat` were method parameters, the model would
+  get a schema field it could fill — it could address another session or rescore under a
+  different format. Making them constructor fields means the generated schema has no such
+  field: the model *cannot* write the wrong session, enforced by the signature.
+  - **Interview line:** *"In Spring AI, @Tool turns every method parameter into schema the
+    model can fill, so the way I keep a fact server-owned is to make it a constructor field,
+    not a parameter. My draft tools take sessionId and scoring format as fields — the model
+    literally has no parameter to address a different session or rescore under another
+    format."*
+
+- **The tool loop ran entirely BENEATH the advisor chain — and `toolCalls: []` does not mean
+  no tools ran.** `SimpleLoggerAdvisor` fired exactly **once** per prompt (one `request:`,
+  one `response:`), and every logged response carried `finishReason: end_turn` with
+  `toolCalls: []`. That empty list is the trap: the tools *did* run (the answers contain my
+  exact engine numbers — St. Brown VORP 89.8, McCaffrey 127.12, McBride 70.85, and profile
+  history rows that only `get_player_profile` returns), but by the time the advisor sees the
+  response the model has already finished the tool loop and produced its final `end_turn`
+  turn, so no calls are *pending*. One advisor firing = the loop runs below the advisor
+  chain, invisibly.
+  - **Interview line:** *"toolCalls: [] on the final response doesn't mean no tools were
+    used — it means none are pending. The framework already executed them and looped back to
+    end_turn below my visibility. Reading that correctly is the difference between 'Spring AI
+    ignored my tools' and 'Spring AI ran them where I can't watch.'"*
+
+- **Token attribution is GONE — one aggregate number, and the numbers prove the loss.** In
+  the raw loop I had a per-iteration growth curve and could point at the 20-row board as the
+  700-token culprit. Here I got one `usage` per exchange, and across the three prompts:
+  prompt 1 = 3322 prompt tokens, prompt 2 = **6580**, prompt 3 = 4796. Prompt 2 ("TE now or
+  wait") cost nearly **double** prompt 1 and *more* than prompt 3 — even though prompt 3
+  does strictly more work (two profile calls on top of state+board). The model made
+  larger/more board calls under the hood on prompt 2, but I **cannot attribute it** — the
+  log shows no `tool_use`. Worse, `promptTokens=3322` is large enough to look like the
+  **final round trip only**, not the sum across the internal loop — so my true spend may be
+  higher than the number shown and I can't see it.
+  - **Interview line:** *"Default execution gives one aggregate usage number per request. In
+    my spike, the 'wait or reach' prompt cost double the 'who to pick' prompt and more than
+    the two-profile comparison — the model made bigger tool calls under the hood, but I
+    couldn't attribute a single token to a single call, and the number looked like the final
+    leg only. That opacity is exactly what I need visible on the draft clock, so my product
+    path takes the loop back."*
+
+- **The framework changed my CODE, not the agent's BEHAVIOR.** The answers were
+  qualitatively identical to the raw loop — same chaining (board → playerId → profile), same
+  parallel calls (inferable from token size), same honest starvation ("I don't have current
+  injury status, depth chart changes, or offseason news"). Proof the framework runs the
+  identical loop I hand-wrote; it changed what I *type* and what I can *see*, not what the
+  model *does*.
+
+### Phase 4.2 (spike) — Mistakes & lessons
+
+- **Predicted both outcomes, got the diagnostic one.** The spec called out that
+  `SimpleLoggerAdvisor` would fire either once (loop below the advisor) or N times (advisor
+  inside the loop), and what each would mean. Getting one firing isn't luck — it's the
+  default-execution architecture. But the value is that I now have the *log* that proves it,
+  which beats having been told. Lesson: design the observation so the result is
+  interpretable either way *before* running it.
+- **Two environment gotchas, both non-code.** (1) The Boot app's embedded Tomcat collided
+  with read-option on 8080 — a bare `main` (raw loop) only opens outbound connections and
+  shares the port fine, but a second Boot web app binds a server socket on startup;
+  `server.port=8081` relocated it. The tool calls to 8080 were always correct. (2) An
+  existing Phase 0 `CommandLineRunner` (`ChatRunner`) would double-fire on boot alongside
+  `SpikeRunner` — quiet the old one for the spike.
+  - **Interview line:** *"A bare Java main and a Spring Boot app collide differently on
+    ports: the plain client only opens outbound connections, so it shares 8080 fine, but a
+    Boot web app binds a server socket on startup — two of them is a bind conflict before
+    any of my code runs. The fix relocates the second app's own Tomcat; the outbound tool
+    calls were never the problem."*
+
+### Phase 4.2 (spike) — The dependency decision (CVE triage, not an upgrade command)
+
+Spring AI 1.1.6 was flagged for vulnerabilities. The lesson is separating two decisions the
+flag conflates:
+- **Patch the CVE:** 1.1.6 → **1.1.8** is a same-minor patch (fixes CVE-2026-41863 and
+  CVE-2026-47835, bumps Spring Boot to 3.5.15). Non-breaking, tool-calling API unchanged,
+  every 4.2 spec stands. Done via the **Spring AI BOM** — one version property, all
+  `spring-ai-*` artifacts move together. This is the right move now.
+- **Adopt the latest (2.0):** Spring AI 2.0 **requires Spring Boot 4.0** (Framework 7,
+  Jackson 3, JSpecify null-safety) and reshapes the tool API (builder-only
+  `internalToolExecutionEnabled`, `ToolCallAdvisor` as default, new `ToolSpec`). That's a
+  whole-project migration, not a dependency bump — scheduled as its own increment, never
+  braided into a security patch.
+- **The EOL wrinkle:** Spring Boot 3.5 hit **end of life June 30, 2026** — so the 1.1.x line
+  (including 1.1.8) is patched but on an EOL baseline. Medium-term pressure toward the Boot 4
+  + Spring AI 2.0 migration; not a 4.2 emergency.
+  - **Interview line:** *"A CVE flag is a triage question, not an upgrade command. I separate
+    'patch the vulnerability' — the smallest in-line patch that clears the CVE and passes the
+    suite — from 'adopt the latest,' which is a platform decision with its own risk
+    assessment. Here that was a same-minor BOM bump; the jump to 2.0, which drags a whole
+    Spring Boot 4 migration, goes on the roadmap as its own increment. It's the banking
+    instinct: you don't take a major-version jump to clear a scanner finding."*
+  - **Interview line (lifecycle):** *"I track the support lifecycle of my baseline, not just
+    my direct dependencies. Spring Boot 3.5 hit EOL June 30, so my patched Spring AI line
+    sits on an EOL platform — which makes the Boot 4 / Spring AI 2.0 move a planned near-term
+    increment rather than a surprise. Knowing the EOL date turns a migration from an
+    emergency into a schedule."*
+
+### Phase 4.2 (spike) — To revisit / carried forward
+
+- **Boot 4 + Spring AI 2.0 migration (post-Phase-4 increment):** the 1.1.8 patch clears the
+  CVEs but leaves the project on the EOL Boot 3.5 baseline. Migration reshapes the tool API
+  (builder-only `internalToolExecutionEnabled`, `ToolCallAdvisor` default, `ToolSpec`) plus
+  Jackson 2→3 and Framework 6.2→7 across the whole project. A named learning phase, not a
+  chore — a real CV line.
+- **Confirm whether 1.1.8 `usage` reports final-leg-only vs aggregate** across the internal
+  tool loop — the spike's numbers suggest final-leg, which would mean true token spend is
+  under-reported in default mode. Moot for the product build (the loop becomes mine and I
+  count per iteration), but worth knowing.
+- **Product build carries (unchanged):** resolved-rules profile tool (no format default on
+  the agent data path), request logging on read-option's tool endpoints, output-shape
+  constraint in the product system prompt (the spike returned heavy emoji-markdown — wrong
+  for a fast on-the-clock turn).
+
+### Phase 4.2 (spike) — Concepts Cheat-Sheet (additions)
+
+**Spring AI tool calling (declarative / default execution)**
+- `@Tool(description=...)` on a method + `@ToolParam(description=..., required=...)` on
+  params; Spring generates the JSON Schema **from the method signature** — schema and code
+  are one artifact, so they can't drift
+- Attach per-request: `chatClient.prompt().user(...).tools(toolObject).call()`; Spring turns
+  each `@Tool` method into a `ToolCallback`. `@ToolParam` params are required by default;
+  nullable → optional
+- Default execution runs the whole recursive tool loop internally (`ToolCallingAdvisor` /
+  `ToolCallingManager`) — **beneath** the advisor chain
+- **Server-owned facts go in constructor FIELDS, not method parameters** — `@Tool` exposes
+  every parameter as a fillable schema field, so a field is the only way the model can't
+  address it (sessionId, scoring format)
+- `SimpleLoggerAdvisor` (`.defaultAdvisors(...)` + `logging.level...advisor=DEBUG`) logs the
+  request/response — but in default mode fires **once** per request; `toolCalls: []` on the
+  final `end_turn` response means "none pending," not "none used"
+- Token usage: `.call().chatResponse().getMetadata().getUsage()` →
+  `getPromptTokens()`/`getCompletionTokens()`/`getTotalTokens()` — **aggregate per request,
+  not per iteration**; you lose per-call attribution (and possibly see final-leg-only)
+
+**The framework-vs-hard-way ledger (raw loop → default execution)**
+- Generated from signature: the tool schema (was hand-written `TOOLS_JSON`)
+- Framework-owned: HTTP call, `stop_reason` handling, tool_use extraction, tool_result
+  batching, transcript accumulation, the loop + its cap
+- **Lost visibility (the cost of the abstraction):** per-iteration token growth, per-call
+  attribution, round-trip count, individual `tool_use` blocks, per-round-trip latency, your
+  own loop cap — i.e. exactly the instrumentation an on-the-clock advisor needs, which is
+  why the product build disables internal execution and drives the loop via
+  `ToolCallingManager`
+
+**Dependency hygiene**
+- CVE flag = triage: patch in-line to the smallest version that clears it (BOM one-liner),
+  keep the major migration a separate, planned increment
+- Spring AI is BOM-managed — bump one `spring-ai.version` property, all artifacts align
+- Track the **EOL date** of the baseline (Boot 3.5 → June 30 2026), not just direct deps —
+  it converts a migration from emergency to schedule
+- A Boot `main` shares a port (outbound only); a Boot **web app** binds a server socket on
+  startup — the second app needs `server.port` relocated
