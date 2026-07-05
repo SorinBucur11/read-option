@@ -1,5 +1,6 @@
 package app.readoption.error;
 
+import app.readoption.agent.AgentLoopLimitException;
 import app.readoption.customization.LeagueConfigNotFoundException;
 import app.readoption.customization.LeagueConfigNotReadyException;
 import app.readoption.draft.DraftSessionNotActiveException;
@@ -122,6 +123,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
         pd.setTitle("Invalid Draft Request");
         pd.setType(URI.create("https://readoption.app/problems/invalid-draft-request"));
+        return pd;
+    }
+
+    @ExceptionHandler(AgentLoopLimitException.class)
+    public ProblemDetail handleAgentLoopLimit(AgentLoopLimitException ex) {
+        log.error("Draft agent loop limit exceeded", ex);
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR,
+                "Draft advice could not be completed within the configured tool-iteration cap");
+        pd.setTitle("Agent Loop Limit Exceeded");
+        pd.setType(URI.create("https://readoption.app/problems/agent-loop-limit"));
         return pd;
     }
 
