@@ -3532,3 +3532,200 @@ flag conflates:
   it converts a migration from emergency to schedule
 - A Boot `main` shares a port (outbound only); a Boot **web app** binds a server socket on
   startup — the second app needs `server.port` relocated
+
+### Phase 4.2 — The Agent Loop, Part 3: Production Build (user-controlled execution) ✅ COMPLETE
+
+The real deliverable: the conversational draft agent in read-option (`app.readoption.agent`),
+built by Claude Code from a chat-authored spec, reviewed as a diff, and verified live against
+session 4 — including the database-kill drill. Parts 1 and 2 were the learning scaffold (own
+the loop by hand, then feel what the framework hides); Part 3 is the version that keeps the
+framework's schema generation and dispatch but takes the loop back for observability. 253 tests
+green (28 new).
+
+### Phase 4.2 (product) — What I built (concrete)
+
+- **`DraftAgentService`** — the manual loop: `ChatModel` + `ToolCallingManager` with
+  `internalToolExecutionEnabled(false)` on `ToolCallingChatOptions` (the 1.1.x API; verified
+  against the 1.1.8 jars with `javap` before writing a line). Owns the `while`, a loud
+  iteration cap (`AgentLoopLimitException` → 500 via the global handler), and per-round-trip
+  DEBUG instrumentation. **No transaction anywhere near the LLM calls** — each tool opens its
+  own short read-only transaction inside the 4.1 services.
+- **`DraftAgentTools`** — a per-request POJO (never a Spring bean), three read-only `@Tool`
+  methods; `sessionId` and resolved `ScoringRules` are constructor-bound **fields**, never
+  `@ToolParam`. A test parses the generated JSON schemas to prove the model has no parameter to
+  reach another session or format. Entry/exit DEBUG logs (`tool exec -> / <-`) log the raw
+  model-supplied args (pre-normalization) so a bad-args throw leaves the diagnostic orphaned
+  arrow.
+- **`ProfileScoringService` + `PlayerProfileView`** — history + projection scored under the
+  session's resolved rules (never the `STANDARD_6PT` default the public profile endpoint uses);
+  ADP via the same `AdpBucket` mapping as the board. Resolves the carry item: the agent's
+  profile tool and the board never quote different markets.
+- **`AgentPromptBuilder`** — externalized template (`prompts/draft-agent-system.txt`) + a
+  pre-injected league scoring summary + the user's `DraftTactics`. Snapshot facts pre-injected;
+  dynamic facts (roster, board) left to tools. `teamCount`/`totalRounds` printed from the
+  **session snapshots**, not re-derived from config.
+- **`AgentConfig`** (session-keyed `MessageWindowChatMemory`, only user turn + final advice
+  persisted), `AgentProperties` (model, max-iterations 8, memory-window 20), controller
+  `POST /api/draft/sessions/{id}/advise`, DTOs, `AgentLoopLimitException`.
+
+### Phase 4.2 (product) — What I learned
+
+- **User-controlled execution is the raw loop, wearing the framework's schema + dispatch.** The
+  1.1.x pattern — `chatModel.call` → `while (response.hasToolCalls())` →
+  `toolCallingManager.executeToolCalls(prompt, response)` → rebuild the prompt from
+  `result.conversationHistory()` → call again — maps 1:1 onto the hand-written raw loop.
+  `hasToolCalls()` is the `stop_reason==tool_use` check; `executeToolCalls` is the content-block
+  dispatch + batching; `conversationHistory()` is the message accumulation. The framework kept
+  the drift-killers (schema from signatures, dispatch) and handed back the loop, the cap, and
+  the token accounting.
+  - **Interview line:** *"For the production agent I disabled Spring AI's internal tool
+    execution and drove the loop myself with ChatModel and ToolCallingManager — call the model,
+    while it has tool calls execute them via the manager and feed the conversation history back,
+    until it stops. I kept the framework's schema generation and dispatch but took back the
+    loop, because loop caps, per-iteration token growth, and latency budgets have to be
+    observable when the advice happens on the draft clock."*
+
+- **`internalToolExecutionEnabled(false)` is 1.1.x-only — removed in 2.0.** Verified before
+  writing: 2.0 removes the option from `ToolCallingChatOptions` and every provider options class,
+  replacing it with `AdvisorParams.toolCallingAdvisorAutoRegister(false)`. So the CVE patch that
+  kept the project on 1.1.8 is also what keeps this loop's core API valid — a major-version jump
+  for the vuln would have forced rewriting the loop mid-feature. The verification retroactively
+  justified the dependency call.
+  - **Interview line:** *"My agent's core API — disabling internal tool execution on the chat
+    options — is Spring AI 1.1.x-specific and was removed in 2.0. When a CVE flag pushed toward
+    upgrading, I patched in-line within 1.1.x rather than jumping to 2.0, because the major
+    version would have forced a loop rewrite and a Spring Boot 4 migration mid-feature."*
+
+- **No transaction around the loop — a deliberate anti-pattern avoided.** The advice loop holds
+  multi-second LLM round trips; each tool opens its own short read-only transaction inside the
+  4.1 services (READ → REASON, no txn spanning the model calls). A transaction wrapped around
+  the loop would pin a DB connection across every round trip — under load, pool exhaustion. Same
+  anti-pattern as a transaction spanning a remote call in a payment flow.
+  - **Interview line:** *"My agent loop is deliberately non-transactional — each tool opens its
+    own short read-only transaction inside the domain services. A transaction wrapped around the
+    loop would hold a DB connection across multi-second LLM round trips; that's the same
+    anti-pattern as a transaction spanning a remote call in a payment flow, and under load it
+    exhausts the pool."*
+
+- **The field-vs-parameter rule became a regression-tested safety property.** `sessionId` and
+  `scoringRules` are constructor fields, so the generated tool schema has no field for them. A
+  test parses the emitted JSON schemas and asserts each tool exposes ONLY its documented params
+  (state: none; board: position, limit; profile: playerId) and contains neither `sessionId` nor
+  `scoringRules`. The snapshot-vs-input boundary is now enforced by a test, not just by intent.
+  - **Interview line:** *"Session and scoring format are bound as constructor fields on the
+    tools object, so the model's generated schema has no parameter to address another session or
+    rescore under another format — and a test parses the emitted schema to prove it. The
+    boundary is a regression-tested safety property, not a convention."*
+
+- **Fixing a two-sources bug: the regression test makes the sources disagree.** When the prompt
+  builder was re-deriving `teamCount`/`totalRounds` from config instead of reading the session
+  snapshots (the 4.1 teamCount principle resurfacing in the prompt layer), the fix came with a
+  test that feeds a session snapshot (14 teams / 16 rounds) deliberately disagreeing with the
+  config (12 teams / 15 derived) and asserts the snapshot wins — so re-derivation can never
+  again pass by coincidence.
+  - **Interview line:** *"When I fix a two-sources bug, the regression test uses a fixture where
+    the two sources deliberately disagree — if they agree, the test can pass for the wrong
+    reason. My prompt-builder test feeds a session snapshot of 14 teams against a config that
+    derives 12, and asserts the snapshot wins."*
+
+- **Pre-inject vs tool is a latency-and-freshness decision — validated in one line of output.**
+  Static session facts (scoring rules, `DraftTactics`) are pre-injected into the system prompt;
+  dynamic facts (state, board, profiles) are tools. The clean run cited "Your Zero RB strategy"
+  in its reasoning — the tactics reached the model through pre-injection, zero tool calls spent
+  fetching strategy, and the model wove it in. The hybrid decision proven in the transcript.
+  - **Interview line:** *"Not every fact should be a tool. Snapshot facts — scoring rules, the
+    user's standing draft tactics — I pre-inject into the system prompt once, because a tool
+    call is a model round trip and round trips are latency I pay on the clock. Tools are for what
+    changes as the draft drains. The agent cited the user's Zero-RB strategy in its advice
+    without spending a tool call to fetch it."*
+
+- **Memory keyed on the same server-owned session id, tool traffic excluded.** Session-scoped
+  `MessageWindowChatMemory`; only the user turn + final advice persisted, never the intra-loop
+  tool requests/responses (they'd bloat the window and leak schema into history). The cap test
+  also proves a failed loop persists nothing. Live: a follow-up turn recalled the prior
+  recommendation with zero tool calls.
+  - **Interview line:** *"The agent's memory is keyed on the same server-owned session id that
+    scopes every tool, and I persist only the user's question and the final advice — the
+    intra-loop tool traffic stays out, because persisting it would bloat the window and leak the
+    tool schema into conversation history."*
+
+- **The database-kill drill — loud failure at the reasoning layer, under PARTIAL failure.**
+  Killed Postgres mid-advice. `getDraftState` threw a `JpaSystemException` deep in the tool; the
+  `DefaultToolCallingManager` caught it, converted it to an error tool-response, and the loop
+  CONTINUED — Hikari replaced the broken connection and the very next tool (`getDraftBoard`)
+  succeeded on a fresh one. The request never crashed. The advice opened with "I'm running into
+  a system error right now and can't pull a live update," fell back to prior-context players, and
+  flagged the pick as unconfirmed rather than fabricating a board state. Stronger than the drill
+  anticipated: it proved honest degradation under *partial* tool failure (one tool down, one up),
+  the more common real-world case, not just total outage.
+  - **Interview line:** *"I killed the database mid-advice on the live agent. One tool threw, the
+    tool manager converted the exception into an error tool-response, and the loop continued — a
+    second tool ran on a recovered connection and succeeded. The model degraded honestly: it
+    opened with 'I can't pull a live update,' fell back to prior context, and flagged the pick as
+    unconfirmed rather than inventing a board state. Loud failure at the reasoning layer, under
+    partial tool failure."*
+
+### Phase 4.2 (product) — Mistakes & lessons
+
+- **The spec was wrong in three places; the delegate was right.** Claude Code deviated with
+  reasoning on each: `String playerId` not `long` (Player.id is String domain-wide), `DraftBoardView`
+  not `List<PlayerValue>` (the view carries the name/VORP/ADP the tool description promises;
+  PlayerValue doesn't), and a no-op commit-1 (board logic already lived in `DraftBoardService`).
+  Lesson: a spec is a design intent, not gospel — a delegate that checks a deviation against the
+  stated rule (don't-collapse-boundaries) and reports it is doing the job right. Review the diff,
+  accept the better call.
+- **The snapshot re-derivation slipped into the prompt builder.** Caught in review, not by tests
+  (they passed because the fixture agreed) — the exact shape of the 4.1 teamCount bug, one layer
+  up. Reinforces: a passing suite where every fixture happens to agree is not proof; the review
+  is the catch.
+- **Spec §7 called in-process tool logging "moot"; the review overrode it.** The service logs
+  what the model *requested*; without tool entry/exit logs nothing records what *executed*. The
+  kill drill depended on exactly that both-ends visibility (the orphaned arrow). Lesson: "moot"
+  was wrong — request-side and execution-side logs answer different questions, and the failure
+  case needs both.
+
+### Phase 4.2 (product) — To revisit / deferred (added to project instructions on closure)
+
+- **`record_pick` as an agent tool** — mutation via the agent with a confirmation turn. 4.2 is
+  read-only by design.
+- **JDBC-backed `ChatMemory`** — survive restarts / multi-instance. In-memory is fine for a
+  single draft sitting.
+- **Boot 4 + Spring AI 2.0 migration** — a named increment: rewrites the loop to
+  `AdvisorParams.toolCallingAdvisorAutoRegister(false)`, drags Jackson 2→3, Framework 6.2→7,
+  JSpecify. The 1.1.x line is patched (1.1.8) but on the EOL Boot 3.5 baseline (EOL June 30 2026).
+- **`countBetterAdpAtPosition` `ELSE adpPpr` branch** — an unrecognized bucket string silently
+  scores as PPR. Unreachable today (callers pass a three-value enum's `name()`); a quiet-default
+  smell to make explicit if a fourth bucket ever appears.
+
+### Phase 4.2 (product) — Concepts Cheat-Sheet (additions)
+
+**User-controlled tool execution (Spring AI 1.1.x)**
+- `ToolCallingManager.builder().build()` + `ToolCallingChatOptions.builder().toolCallbacks(ToolCallbacks.from(pojo)).internalToolExecutionEnabled(false).build()`
+- Loop: `chatModel.call(prompt)` → `while (response.hasToolCalls())` →
+  `toolCallingManager.executeToolCalls(prompt, response)` →
+  `prompt = new Prompt(result.conversationHistory(), options)` → call again → final text
+- `conversationHistory()` carries system+user+tool-calls+tool-results forward — never re-add the
+  system message; own the iteration cap (loud) and per-call token/latency logging
+- **1.1.x-only:** removed in 2.0 (`AdvisorParams.toolCallingAdvisorAutoRegister(false)` replaces it)
+- Tool exceptions are caught by `DefaultToolCallingManager` and returned to the model as error
+  tool-responses — the honest-degradation path, no crash; verified by killing the DB mid-loop
+
+**Agent architecture discipline**
+- No transaction around the loop — each tool opens its own short read-only txn; a txn spanning
+  the LLM round trips pins a connection and exhausts the pool under load
+- Server-owned facts (session, rules) are constructor FIELDS on the tools object, never
+  `@ToolParam` — enforced by a schema-parsing test, a regression-tested safety property
+- Pre-inject snapshot facts (scoring, tactics); tool the dynamic ones (state, board, profiles) —
+  a latency-and-freshness decision, not a default
+- Memory keyed on the server-owned session id; persist only user turn + final advice, never tool
+  traffic
+- Read-only tool surface in v1 — the narrowest stored-proc surface for an untrusted caller;
+  mutation earns its own increment with confirmation
+
+**Reviewing a delegated build**
+- The spec is design intent, not gospel — a delegate that deviates WITH reasoning against a
+  stated rule is doing the job right; review the diff, accept the better call
+- A passing suite where every fixture agrees is not proof of a single-source invariant — the
+  review is the catch; the regression test should make the two sources disagree
+- Request-side and execution-side logs answer different questions — an agent needs both, and the
+  failure case (orphaned request with no execution) is where both-ends logging earns its keep

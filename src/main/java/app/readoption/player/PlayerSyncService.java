@@ -10,7 +10,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
@@ -32,10 +32,8 @@ public class PlayerSyncService {
 
         Map<String, SleeperPlayer> allPlayers = sleeperClient.fetchAllPlayers();
 
-        // Get existing player IDs for comparison
-        Set<String> existingIds = playerRepository.findAll().stream()
-                .map(Player::getId)
-                .collect(Collectors.toSet());
+        Map<String, Player> existingById = playerRepository.findAll().stream()
+                .collect(Collectors.toMap(Player::getId, Function.identity()));
 
         List<Player> fantasyPlayers = allPlayers.values().stream()
                 .filter(sp -> Boolean.TRUE.equals(sp.active()))
@@ -47,8 +45,12 @@ public class PlayerSyncService {
 
         // Mark existing players so Hibernate does UPDATE, not SELECT+INSERT
         fantasyPlayers.forEach(p -> {
-            if (existingIds.contains(p.getId())) {
+            Player existing = existingById.get(p.getId());
+            if (existing != null) {
                 p.markExisting();
+                // espn_id's writer is the id-mapping enrichment stage; the Sleeper
+                // blob doesn't carry it — a plain sync must not overwrite it with null.
+                p.setEspnId(existing.getEspnId());
             }
         });
 
@@ -76,11 +78,27 @@ public class PlayerSyncService {
                 .lastName(lastName)
                 .fullName(fullName)
                 .position(sp.position())
-                .team(sp.team())
+                .team(sp.team())   // the blob's populated field is team, NOT team_abbr (null)
                 .age(sp.age())
                 .yearsExp(sp.yearsExp())
                 .status(sp.status())
                 .active(sp.active())
+                .depthChartPosition(sp.depthChartPosition())
+                .depthChartOrder(sp.depthChartOrder())
+                .injuryStatus(sp.injuryStatus())
+                .injuryBodyPart(truncate(sp.injuryBodyPart(), 50))
+                .injuryNotes(truncate(sp.injuryNotes(), 255))
                 .build();
+    }
+
+    /**
+     * The injury free-text fields are the only source values without a bounded
+     * vocabulary; an over-length note must not fail the whole sync batch.
+     */
+    private static String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength);
     }
 }
