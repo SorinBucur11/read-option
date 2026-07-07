@@ -121,7 +121,9 @@ class DraftAgentToolsTest {
     @DisplayName("getPlayerProfile scores under the bound resolved rules, never a preset default")
     void profileDelegatesWithBoundRules() {
         when(profileScoringService.profile(anyString(), any())).thenReturn(
-                new PlayerProfileView("4866", "Saquon Barkley", "RB", "PHI", List.of(), null));
+                new PlayerProfileView("4866", "Saquon Barkley", "RB", "PHI",
+                        "RB", 1, List.of(), "no injury reported", null, null,
+                        "9", List.of("W1 vs DAL (home)"), List.of(), null));
 
         tools().getPlayerProfile("4866");
 

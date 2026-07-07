@@ -7,6 +7,7 @@ import app.readoption.player.Player;
 import app.readoption.player.PlayerNotFoundException;
 import app.readoption.player.PlayerRepository;
 import app.readoption.scoring.Position;
+import app.readoption.team.TeamContextService;
 import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -38,17 +39,20 @@ public class DraftService {
     private final DraftPickRepository pickRepository;
     private final PlayerRepository playerRepository;
     private final LeagueConfigRepository leagueConfigRepository;
+    private final TeamContextService teamContextService;
     private final int currentSeason;
 
     public DraftService(DraftSessionRepository sessionRepository,
                         DraftPickRepository pickRepository,
                         PlayerRepository playerRepository,
                         LeagueConfigRepository leagueConfigRepository,
+                        TeamContextService teamContextService,
                         @Value("${readoption.current-season}") int currentSeason) {
         this.sessionRepository = sessionRepository;
         this.pickRepository = pickRepository;
         this.playerRepository = playerRepository;
         this.leagueConfigRepository = leagueConfigRepository;
+        this.teamContextService = teamContextService;
         this.currentSeason = currentSeason;
     }
 
@@ -165,16 +169,27 @@ public class DraftService {
         Map<Integer, List<DraftPick>> picksBySlot = picks.stream()
                 .collect(Collectors.groupingBy(p -> SnakeOrder.teamFor(p.getOverallPickNo(), teamCount)));
 
-        List<DraftStateView.RosterEntry> userRoster = picksBySlot
-                .getOrDefault(userSlot, List.of())
+        List<DraftPick> userPicks = picksBySlot.getOrDefault(userSlot, List.of());
+        // One batch lookup for the roster's byes: LEFT-JOIN posture, loud degradation
+        // for no-team/unknown-team — never a dropped entry.
+        Map<String, String> byeLabels = teamContextService.byeWeekLabels(userPicks.stream()
+                .map(p -> playersById.get(p.getPlayerId()))
+                .filter(player -> player != null && player.getTeam() != null)
+                .map(Player::getTeam)
+                .collect(Collectors.toSet()));
+
+        List<DraftStateView.RosterEntry> userRoster = userPicks
                 .stream()
                 .map(p -> {
                     Player player = playersById.get(p.getPlayerId());
+                    String team = player != null ? player.getTeam() : null;
                     return new DraftStateView.RosterEntry(
                             p.getPlayerId(),
                             player != null ? player.getFullName() : p.getPlayerId(),
                             player != null ? player.getPosition() : null,
-                            SnakeOrder.roundOf(p.getOverallPickNo(), teamCount));
+                            SnakeOrder.roundOf(p.getOverallPickNo(), teamCount),
+                            team != null ? byeLabels.get(team)
+                                    : TeamContextService.BYE_UNKNOWN_NO_TEAM);
                 })
                 .toList();
 

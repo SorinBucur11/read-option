@@ -14,6 +14,7 @@ import app.readoption.scoring.Position;
 import app.readoption.scoring.ScoringResult;
 import app.readoption.scoring.ScoringRules;
 import app.readoption.scoring.ScoringService;
+import app.readoption.team.TeamContextService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,21 +39,30 @@ public class ProfileScoringService {
     /** The advisor's lookback window: enough seasons to see a role, not a career dump. */
     private static final int HISTORY_SEASONS = 5;
 
+    /** Field label when the depth chart carries no confirmed role — never a guess. */
+    static final String ROLE_UNCONFIRMED = "role unconfirmed";
+
+    /** Injury label when no {@code injury_status} is reported. */
+    static final String NO_INJURY = "no injury reported";
+
     private final PlayerRepository playerRepository;
     private final PlayerStatsRepository statsRepository;
     private final PlayerProjectionRepository projectionRepository;
     private final ScoringService scoringService;
+    private final TeamContextService teamContextService;
     private final int currentSeason;
 
     public ProfileScoringService(PlayerRepository playerRepository,
                                  PlayerStatsRepository statsRepository,
                                  PlayerProjectionRepository projectionRepository,
                                  ScoringService scoringService,
+                                 TeamContextService teamContextService,
                                  @Value("${readoption.current-season}") int currentSeason) {
         this.playerRepository = playerRepository;
         this.statsRepository = statsRepository;
         this.projectionRepository = projectionRepository;
         this.scoringService = scoringService;
+        this.teamContextService = teamContextService;
         this.currentSeason = currentSeason;
     }
 
@@ -75,13 +85,51 @@ public class ProfileScoringService {
                 .map(mart -> toProjectionScore(mart, rules, player))
                 .orElse(null);
 
+        TeamContextService.TeamContext teamContext =
+                teamContextService.contextFor(player.getTeam(), currentSeason);
+
+        // injury_status is the authoritative flag; body part and notes are attributes
+        // of a reported status. Sleeper's current payloads never carry them without a
+        // status, but that invariant is the vendor's, not ours — a lingering note with
+        // a cleared status must read as no injury, never a floating concern.
+        boolean injuryReported = player.getInjuryStatus() != null;
+
         return new PlayerProfileView(
                 player.getId(),
                 player.getFullName(),
                 player.getPosition(),
-                player.getTeam(),
+                player.getTeam() != null ? player.getTeam() : TeamContextService.NO_TEAM,
+                player.getDepthChartPosition() != null
+                        ? player.getDepthChartPosition() : ROLE_UNCONFIRMED,
+                player.getDepthChartOrder(),
+                depthChartAhead(player),
+                injuryReported ? player.getInjuryStatus() : NO_INJURY,
+                injuryReported ? player.getInjuryBodyPart() : null,
+                injuryReported ? player.getInjuryNotes() : null,
+                teamContext.byeWeek(),
+                teamContext.earlyOpponents(),
                 history,
                 projection);
+    }
+
+    /**
+     * Names on the same RAW sub-position ladder with a strictly lower order (a
+     * team fields an order-1 LWR, RWR, and SWR simultaneously — normalized-WR
+     * scoping would report false competition). Empty for the starter; null
+     * (omitted) when team or role data is missing — degradation over guessing.
+     */
+    private List<String> depthChartAhead(Player player) {
+        if (player.getTeam() == null || player.getDepthChartPosition() == null
+                || player.getDepthChartOrder() == null) {
+            return null;
+        }
+        return playerRepository
+                .findByTeamAndDepthChartPositionAndDepthChartOrderLessThanOrderByDepthChartOrderAsc(
+                        player.getTeam(), player.getDepthChartPosition(),
+                        player.getDepthChartOrder())
+                .stream()
+                .map(Player::getFullName)
+                .toList();
     }
 
     private SeasonScore toSeasonScore(PlayerStats stats, ScoringRules rules, Position position) {

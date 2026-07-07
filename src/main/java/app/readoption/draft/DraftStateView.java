@@ -14,6 +14,11 @@ import java.util.Map;
  * COMPLETE; {@code picksUntilUserNextTurn} is null when the user has no pick left.
  * {@code gapTeams} describes each <i>distinct</i> opponent slot picking strictly
  * before the user's next turn, with positional counts only.
+ *
+ * <p>{@code RosterEntry.byeWeek} (Phase 4.3) is the week as a string, or a loud
+ * degradation label ({@link app.readoption.team.TeamContextService} vocabulary)
+ * when the player has no team or the team is unknown — shared-bye risk across the
+ * user's picks without a new tool.
  */
 public record DraftStateView(
         long sessionId,
@@ -31,7 +36,8 @@ public record DraftStateView(
             String playerId,
             String name,
             String position,
-            int round
+            int round,
+            String byeWeek
     ) {
     }
 

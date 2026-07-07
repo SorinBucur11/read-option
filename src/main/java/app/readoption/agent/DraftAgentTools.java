@@ -54,9 +54,10 @@ public class DraftAgentTools {
     }
 
     @Tool(description = "Get the current draft state: overall pick on the clock, which team is "
-            + "picking, the user's roster so far, unfilled roster slots, picks until the user's "
-            + "next turn, and per-opponent positional counts for the teams picking before the "
-            + "user's next turn (the survivability gap).")
+            + "picking, the user's roster so far (each entry includes the player's bye week, "
+            + "so shared-bye risk across picks is visible), unfilled roster slots, picks until "
+            + "the user's next turn, and per-opponent positional counts for the teams picking "
+            + "before the user's next turn (the survivability gap).")
     public DraftStateView getDraftState() {
         log.debug("tool exec -> getDraftState [session {}]", sessionId);
         long start = System.nanoTime();
@@ -87,9 +88,13 @@ public class DraftAgentTools {
     }
 
     @Tool(description = "Get one player's detailed profile by playerId (from the board): the last "
-            + "five seasons of actual fantasy points (total, per-game, games played) plus the "
-            + "current-season projection with ADP and positional rank. All points are scored under "
-            + "THIS league's rules - do not compare against other formats.")
+            + "five seasons of actual fantasy points (total, per-game, games played), the "
+            + "current-season projection with ADP and positional rank, plus current context - "
+            + "team, depth chart role and the players ahead of him on that ladder, injury "
+            + "status/detail, bye week, and weeks 1-3 opponents. Context fields degrade to "
+            + "explicit 'unconfirmed'/'unavailable' labels when facts are missing - treat those "
+            + "as unknown, never guess. All points are scored under THIS league's rules - do "
+            + "not compare against other formats.")
     public PlayerProfileView getPlayerProfile(
             @ToolParam(description = "The playerId from the draft board")
             String playerId) {

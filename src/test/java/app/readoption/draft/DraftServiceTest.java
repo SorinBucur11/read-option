@@ -6,6 +6,10 @@ import app.readoption.customization.LeagueConfigRepository;
 import app.readoption.player.PlayerNotFoundException;
 import app.readoption.player.PlayerRepository;
 import app.readoption.scoring.Position;
+import app.readoption.team.NflTeam;
+import app.readoption.team.NflTeamRepository;
+import app.readoption.team.TeamContextService;
+import app.readoption.team.TeamScheduleRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.hibernate.exception.ConstraintViolationException;
@@ -41,10 +45,18 @@ class DraftServiceTest {
     @Mock private DraftPickRepository pickRepository;
     @Mock private PlayerRepository playerRepository;
     @Mock private LeagueConfigRepository leagueConfigRepository;
+    @Mock private NflTeamRepository nflTeamRepository;
+    @Mock private TeamScheduleRepository teamScheduleRepository;
 
+    /**
+     * Real TeamContextService over mocked repositories: unstubbed lookups return
+     * empty, so every fixture team degrades loudly — exactly the LEFT-JOIN posture
+     * under test. Tests that want a real bye stub {@code nflTeamRepository}.
+     */
     private DraftService service() {
         return new DraftService(sessionRepository, pickRepository, playerRepository,
-                leagueConfigRepository, SEASON);
+                leagueConfigRepository,
+                new TeamContextService(nflTeamRepository, teamScheduleRepository), SEASON);
     }
 
     /** 1 QB / 2 RB / 2 WR / 1 TE / 1 FLEX(RB,WR) / 0 SF / 6 bench = 13 rounds. */
@@ -311,6 +323,37 @@ class DraftServiceTest {
         assertThat(state.unfilledSlots()).containsEntry("RB", 0)
                 .containsEntry("FLEX", 0)      // third RB absorbed
                 .containsEntry("BENCH", 5);    // fourth RB on the bench
+    }
+
+    @Test
+    @DisplayName("roster byeWeek: known team reads nfl_team's derived bye")
+    void rosterByeEnrichment() {
+        when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session(DraftStatus.ACTIVE)));
+        when(leagueConfigRepository.findById(CONFIG_ID)).thenReturn(Optional.of(config()));
+        // Pick 8 belongs to user slot 8 in a 10-team snake.
+        when(pickRepository.findBySessionIdOrderByOverallPickNo(SESSION_ID)).thenReturn(List.of(
+                DraftPick.builder().sessionId(SESSION_ID).overallPickNo(8).playerId("P8").build()));
+        when(playerRepository.findAllById(any())).thenReturn(List.of(
+                player("P8", "Runner Eight", "RB", "PHI", true)));
+        when(nflTeamRepository.findAllById(Set.of("PHI"))).thenReturn(List.of(
+                NflTeam.builder().abbrev("PHI").espnAbbrev("PHI")
+                        .name("Philadelphia Eagles").byeWeek(9).build()));
+
+        DraftStateView state = service().getState(SESSION_ID);
+
+        assertThat(state.userRoster().get(0).byeWeek()).isEqualTo("9");
+    }
+
+    @Test
+    @DisplayName("roster byeWeek degrades to the loud label for an unknown team — entry never dropped")
+    void rosterByeDegradation() {
+        stubEightPickState();   // fixture team "XX" is not in nfl_team
+
+        DraftStateView state = service().getState(SESSION_ID);
+
+        assertThat(state.userRoster()).hasSize(1);
+        assertThat(state.userRoster().get(0).byeWeek())
+                .isEqualTo(TeamContextService.BYE_UNKNOWN_NO_TEAM);
     }
 
     @Test

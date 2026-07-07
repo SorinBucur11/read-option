@@ -121,7 +121,7 @@ class DraftControllerTest {
     @DisplayName("GET /state happy path serializes the full view")
     void state() throws Exception {
         DraftStateView view = new DraftStateView(1L, DraftStatus.ACTIVE, 9, 9, false, 4,
-                List.of(new DraftStateView.RosterEntry("P8", "Runner Eight", "RB", 1)),
+                List.of(new DraftStateView.RosterEntry("P8", "Runner Eight", "RB", 1, "9")),
                 Map.of("RB", 1),
                 List.of(new DraftStateView.GapTeam(9, 2, Map.of())));
         when(draftService.getState(1L)).thenReturn(view);
@@ -132,6 +132,7 @@ class DraftControllerTest {
                 .andExpect(jsonPath("$.onTheClock").value(false))
                 .andExpect(jsonPath("$.picksUntilUserNextTurn").value(4))
                 .andExpect(jsonPath("$.userRoster[0].name").value("Runner Eight"))
+                .andExpect(jsonPath("$.userRoster[0].byeWeek").value("9"))
                 .andExpect(jsonPath("$.unfilledSlots.RB").value(1))
                 .andExpect(jsonPath("$.gapTeams[0].teamSlot").value(9))
                 .andExpect(jsonPath("$.gapTeams[0].picksInGap").value(2));

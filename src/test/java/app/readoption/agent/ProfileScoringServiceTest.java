@@ -7,8 +7,14 @@ import app.readoption.playerprojection.PlayerProjection;
 import app.readoption.playerprojection.PlayerProjectionRepository;
 import app.readoption.playerstats.PlayerStats;
 import app.readoption.playerstats.PlayerStatsRepository;
+import app.readoption.player.Player;
 import app.readoption.scoring.ScoringRules;
 import app.readoption.scoring.ScoringService;
+import app.readoption.team.NflTeam;
+import app.readoption.team.NflTeamRepository;
+import app.readoption.team.TeamContextService;
+import app.readoption.team.TeamSchedule;
+import app.readoption.team.TeamScheduleRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -54,10 +60,19 @@ class ProfileScoringServiceTest {
     @Mock private PlayerRepository playerRepository;
     @Mock private PlayerStatsRepository statsRepository;
     @Mock private PlayerProjectionRepository projectionRepository;
+    @Mock private NflTeamRepository nflTeamRepository;
+    @Mock private TeamScheduleRepository teamScheduleRepository;
 
+    /**
+     * Real TeamContextService over mocked repositories: unstubbed lookups return
+     * empty, so the fixture default team ("XX") degrades loudly without per-test
+     * stubbing — the LEFT-JOIN posture is always on.
+     */
     private ProfileScoringService service() {
         return new ProfileScoringService(playerRepository, statsRepository,
-                projectionRepository, new ScoringService(), CURRENT_SEASON);
+                projectionRepository, new ScoringService(),
+                new TeamContextService(nflTeamRepository, teamScheduleRepository),
+                CURRENT_SEASON);
     }
 
     /** Barkley's 2026 Rotowire line — the source of the regression anchors. */
@@ -186,6 +201,153 @@ class ProfileScoringServiceTest {
 
         assertThatExceptionOfType(PlayerNotFoundException.class)
                 .isThrownBy(() -> service().profile("nope", STANDARD_RULES));
+    }
+
+    // ----- Phase 4.3 role block -----
+
+    /** Bare profile stubs so the role-block tests don't drag scoring fixtures along. */
+    private void stubProfileScaffolding(Player fixture) {
+        when(playerRepository.findById(fixture.getId())).thenReturn(Optional.of(fixture));
+        when(statsRepository.findByPlayerId(fixture.getId())).thenReturn(List.of());
+        when(projectionRepository.findByPlayerIdAndYear(fixture.getId(), CURRENT_SEASON))
+                .thenReturn(Optional.empty());
+    }
+
+    private static Player contextPlayer(String id, String team, String depthPosition,
+                                        Integer depthOrder) {
+        Player fixture = player(id, "Context Player", "WR", team, true);
+        fixture.setDepthChartPosition(depthPosition);
+        fixture.setDepthChartOrder(depthOrder);
+        return fixture;
+    }
+
+    @Test
+    @DisplayName("starter on a known team: role block, empty depthChartAhead, bye + early opponents")
+    void starterEnrichment() {
+        Player starter = contextPlayer("S1", "PHI", "RB", 1);
+        stubProfileScaffolding(starter);
+        when(playerRepository
+                .findByTeamAndDepthChartPositionAndDepthChartOrderLessThanOrderByDepthChartOrderAsc(
+                        "PHI", "RB", 1))
+                .thenReturn(List.of());
+        when(nflTeamRepository.findById("PHI")).thenReturn(Optional.of(
+                NflTeam.builder().abbrev("PHI").espnAbbrev("PHI")
+                        .name("Philadelphia Eagles").byeWeek(9).build()));
+        when(teamScheduleRepository
+                .findByTeamAndSeasonAndWeekLessThanEqualOrderByWeekAsc("PHI", CURRENT_SEASON, 3))
+                .thenReturn(List.of(
+                        TeamSchedule.builder().team("PHI").season(CURRENT_SEASON).week(1)
+                                .opponent("DAL").isHome(true).build(),
+                        TeamSchedule.builder().team("PHI").season(CURRENT_SEASON).week(2)
+                                .opponent("KC").isHome(false).build()));
+
+        PlayerProfileView profile = service().profile("S1", STANDARD_RULES);
+
+        assertThat(profile.team()).isEqualTo("PHI");
+        assertThat(profile.depthChartPosition()).isEqualTo("RB");
+        assertThat(profile.depthChartOrder()).isEqualTo(1);
+        assertThat(profile.depthChartAhead()).isEmpty();   // starter: empty, not omitted
+        assertThat(profile.injuryStatus()).isEqualTo("no injury reported");
+        assertThat(profile.byeWeek()).isEqualTo("9");
+        assertThat(profile.earlyOpponents())
+                .containsExactly("W1 vs DAL (home)", "W2 at KC (away)");
+    }
+
+    @Test
+    @DisplayName("backup: depthChartAhead carries the ladder names in order")
+    void backupDepthChartAhead() {
+        Player backup = contextPlayer("B1", "CIN", "SWR", 3);
+        stubProfileScaffolding(backup);
+        when(playerRepository
+                .findByTeamAndDepthChartPositionAndDepthChartOrderLessThanOrderByDepthChartOrderAsc(
+                        "CIN", "SWR", 3))
+                .thenReturn(List.of(
+                        player("A1", "Slot One", "WR", "CIN", true),
+                        player("A2", "Slot Two", "WR", "CIN", true)));
+
+        PlayerProfileView profile = service().profile("B1", STANDARD_RULES);
+
+        assertThat(profile.depthChartPosition()).isEqualTo("SWR");   // raw, never normalized
+        assertThat(profile.depthChartAhead()).containsExactly("Slot One", "Slot Two");
+    }
+
+    @Test
+    @DisplayName("injured: the raw injury trio passes through untranslated")
+    void injuredPassthrough() {
+        Player injured = contextPlayer("I1", "KC", "QB", 1);
+        injured.setInjuryStatus("Questionable");
+        injured.setInjuryBodyPart("Ankle");
+        injured.setInjuryNotes("Surgery");
+        stubProfileScaffolding(injured);
+        when(playerRepository
+                .findByTeamAndDepthChartPositionAndDepthChartOrderLessThanOrderByDepthChartOrderAsc(
+                        "KC", "QB", 1))
+                .thenReturn(List.of());
+
+        PlayerProfileView profile = service().profile("I1", STANDARD_RULES);
+
+        assertThat(profile.injuryStatus()).isEqualTo("Questionable");
+        assertThat(profile.injuryBodyPart()).isEqualTo("Ankle");
+        assertThat(profile.injuryNotes()).isEqualTo("Surgery");
+    }
+
+    @Test
+    @DisplayName("partial trio (status null, lingering notes): whole block reads NO_INJURY, notes suppressed")
+    void partialInjuryTrioReadsNoInjury() {
+        // Counterfactual fixture: today's Sleeper blob never carries notes without a
+        // status (verified against the full payload, 2026-07-07). That invariant is
+        // the vendor's to break, silently, on any future sync — this pins OUR read
+        // boundary for the day it does: status is the authoritative flag, and a
+        // floating "Surgery" must not serialize as an active concern.
+        Player lingering = contextPlayer("L1", "KC", "QB", 1);
+        lingering.setInjuryBodyPart("Ankle");
+        lingering.setInjuryNotes("Surgery");
+        stubProfileScaffolding(lingering);
+        when(playerRepository
+                .findByTeamAndDepthChartPositionAndDepthChartOrderLessThanOrderByDepthChartOrderAsc(
+                        "KC", "QB", 1))
+                .thenReturn(List.of());
+
+        PlayerProfileView profile = service().profile("L1", STANDARD_RULES);
+
+        assertThat(profile.injuryStatus()).isEqualTo("no injury reported");
+        assertThat(profile.injuryBodyPart()).isNull();   // omitted by NON_NULL
+        assertThat(profile.injuryNotes()).isNull();      // omitted by NON_NULL
+    }
+
+    @Test
+    @DisplayName("free agent (null team): every context field degrades loudly, row NOT dropped")
+    void freeAgentDegradation() {
+        stubProfileScaffolding(contextPlayer("F1", null, null, null));
+
+        PlayerProfileView profile = service().profile("F1", STANDARD_RULES);
+
+        assertThat(profile.team()).isEqualTo(TeamContextService.NO_TEAM);
+        assertThat(profile.depthChartPosition()).isEqualTo("role unconfirmed");
+        assertThat(profile.depthChartOrder()).isNull();
+        assertThat(profile.depthChartAhead()).isNull();   // omitted when role unconfirmed
+        assertThat(profile.byeWeek()).isEqualTo(TeamContextService.BYE_UNKNOWN_NO_TEAM);
+        assertThat(profile.earlyOpponents())
+                .containsExactly(TeamContextService.OPPONENTS_UNAVAILABLE);
+    }
+
+    @Test
+    @DisplayName("stale OAK team: degradation, never a silent remap to LV")
+    void unknownTeamDegradation() {
+        Player stale = contextPlayer("O1", "OAK", "TE", 1);
+        stubProfileScaffolding(stale);
+        when(playerRepository
+                .findByTeamAndDepthChartPositionAndDepthChartOrderLessThanOrderByDepthChartOrderAsc(
+                        "OAK", "TE", 1))
+                .thenReturn(List.of());
+        when(nflTeamRepository.findById("OAK")).thenReturn(Optional.empty());
+
+        PlayerProfileView profile = service().profile("O1", STANDARD_RULES);
+
+        assertThat(profile.team()).isEqualTo("OAK");   // the raw fact, not a guess
+        assertThat(profile.byeWeek()).isEqualTo(TeamContextService.BYE_UNKNOWN_NO_TEAM);
+        assertThat(profile.earlyOpponents())
+                .containsExactly(TeamContextService.OPPONENTS_UNAVAILABLE);
     }
 
     private static PlayerStats statSeason(int year) {

@@ -12,6 +12,15 @@ public interface PlayerRepository extends JpaRepository<Player, String> {
 
     List<Player> findByPosition(String position);
 
+    /**
+     * The players ahead on a depth-chart ladder — scoped to the RAW sub-position
+     * (an order-2 SWR sees only the order-1 SWR, never the LWR/RWR starters:
+     * normalized-WR scoping would report false competition). In SQL by design,
+     * not a Java filter over a team fetch.
+     */
+    List<Player> findByTeamAndDepthChartPositionAndDepthChartOrderLessThanOrderByDepthChartOrderAsc(
+            String team, String depthChartPosition, Integer depthChartOrder);
+
     List<Player> findByTeam(String team);
 
     List<Player> findByActiveTrue();
