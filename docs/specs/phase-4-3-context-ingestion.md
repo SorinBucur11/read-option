@@ -314,7 +314,15 @@ Post-review additions (2026-07-07, owner's findings checklist):
 11. **`EspnScheduleClient` constructor-injects Boot's `RestClient.Builder`** (F2).
     Note: `EspnClient` (committed, Phase 2) also uses `RestClient.create()` — migrate
     only when explicitly asked, same posture as `SleeperClient`.
-12. **`espn_id` carry-over in the player upsert** (F4, own commit): the Sleeper blob
-    doesn't carry `espn_id`; the id-mapping stage does. The upsert now copies the
-    existing value forward so a plain `/api/players/sync` can't null it. Regression
-    test: `espnIdSurvivesPlainSync`. Suite is now 287.
+12. **Non-source-owned column carry-over in the player upsert** (F4 + F6, own
+    commit): `saveAll` on a detached entity with an existing ID is a JPA merge —
+    Hibernate copies the detached instance's *entire* state onto the managed row,
+    null included; `markExisting()` only selects the persist-vs-merge path, it does
+    nothing about what merge copies. Every column the blob doesn't source was
+    therefore silently nulled on each re-sync. Two casualties: `espn_id` (writer:
+    id-mapping enrichment; F4, reported symptom) and `created_at` (writer:
+    `@PrePersist`, insert path only; F6, confirmed live — exactly the 3,217
+    pre-existing rows lost it, the 4 insert-path rows kept it; `updated_at` self-
+    healed because `@PreUpdate` re-derives it on every flush). The upsert now
+    carries both forward from the existing row. Regression test:
+    `nonSourceOwnedColumnsSurvivePlainSync`. Suite is now 287.

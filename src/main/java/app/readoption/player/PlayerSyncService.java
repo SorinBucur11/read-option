@@ -48,9 +48,11 @@ public class PlayerSyncService {
             Player existing = existingById.get(p.getId());
             if (existing != null) {
                 p.markExisting();
-                // espn_id's writer is the id-mapping enrichment stage; the Sleeper
-                // blob doesn't carry it — a plain sync must not overwrite it with null.
-                p.setEspnId(existing.getEspnId());
+                // Non-source-owned columns: merge copies the detached entity's FULL
+                // state onto the managed row — null included — so every field the
+                // blob doesn't carry must be explicitly preserved here.
+                p.setEspnId(existing.getEspnId());       // writer: id-mapping enrichment stage
+                p.setCreatedAt(existing.getCreatedAt()); // writer: @PrePersist, insert only
             }
         });
 

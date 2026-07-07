@@ -11,6 +11,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -150,18 +151,25 @@ class PlayerSyncServiceTest {
     }
 
     @Test
-    @DisplayName("existing espn_id survives a plain sync — two writers, and the blob isn't one of them")
-    void espnIdSurvivesPlainSync() throws Exception {
-        // espn_id is written by the id-mapping enrichment stage, not the Sleeper blob;
-        // the upsert builds a fresh entity, so without an explicit carry-over the merge
-        // quietly nulls it (the teamCount family: two writers, one silent overwrite).
+    @DisplayName("non-source-owned columns survive a plain sync — merge copies FULL state, null included")
+    void nonSourceOwnedColumnsSurvivePlainSync() throws Exception {
+        // saveAll on a detached entity with an existing ID is a merge: Hibernate copies
+        // the detached instance's ENTIRE state onto the managed row — there is no
+        // "only overwrite what changed", null is a value like any other. The upsert
+        // builds fresh entities from the blob, so every column the blob doesn't source
+        // must be explicitly carried forward or it's silently nulled on every sync.
+        // Two such columns: espn_id (writer: id-mapping enrichment) and created_at
+        // (writer: @PrePersist, insert path only). Proven live 2026-07-07: exactly the
+        // pre-existing rows (3,217 of 3,221) had lost created_at; the 4 new rows kept it.
         SleeperPlayer sleeperPlayer = blobMapper.readValue(MAHOMES_SHAPE, SleeperPlayer.class);
         when(sleeperClient.fetchAllPlayers())
                 .thenReturn(Map.of(sleeperPlayer.playerId(), sleeperPlayer));
+        LocalDateTime originalCreation = LocalDateTime.of(2026, 1, 15, 8, 30);
         Player existing = Player.builder()
                 .id("4046").firstName("Patrick").lastName("Mahomes")
                 .fullName("Patrick Mahomes").position("QB").active(true)
                 .espnId("3139477")
+                .createdAt(originalCreation)
                 .build();
         when(playerRepository.findAll()).thenReturn(List.of(existing));
 
@@ -172,6 +180,7 @@ class PlayerSyncServiceTest {
         verify(playerRepository).saveAll(captor.capture());
         Player synced = captor.getValue().get(0);
         assertThat(synced.getEspnId()).isEqualTo("3139477");
+        assertThat(synced.getCreatedAt()).isEqualTo(originalCreation);
         assertThat(synced.isNew()).isFalse();
     }
 
