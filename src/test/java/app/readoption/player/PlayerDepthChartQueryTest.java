@@ -9,6 +9,7 @@ import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabas
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 
 import java.util.List;
+import java.util.Set;
 
 import static app.readoption.TestFixtures.player;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,7 +45,8 @@ class PlayerDepthChartQueryTest extends AbstractPostgresTest {
                 depthPlayer("W3", "Slot One", "CIN", "SWR", 1),
                 depthPlayer("W4", "Slot Two", "CIN", "SWR", 2),
                 depthPlayer("W5", "Slot Three", "CIN", "SWR", 3),
-                depthPlayer("W6", "Other Room Slot", "KC", "SWR", 1)));
+                depthPlayer("W6", "Other Room Slot", "KC", "SWR", 1),
+                depthPlayer("R1", "Back One", "CIN", "RB", 1)));   // adjacent room, same team
     }
 
     @Test
@@ -76,5 +78,28 @@ class PlayerDepthChartQueryTest extends AbstractPostgresTest {
                         "CIN", "SWR", 1);
 
         assertThat(ahead).isEmpty();
+    }
+
+    // ----- team-room query (4.3.1 Commit F): ladders IN-set, ladder-then-order -----
+
+    @Test
+    @DisplayName("WR room: all three receiver ladders in ladder-then-order sequence, no RB, no other team")
+    void receiverRoomSpansThreeLadders() {
+        List<Player> room = playerRepository
+                .findByTeamAndDepthChartPositionInOrderByDepthChartPositionAscDepthChartOrderAsc(
+                        "CIN", Set.of("LWR", "RWR", "SWR"));
+
+        assertThat(room).extracting(Player::getFullName).containsExactly(
+                "Left One", "Right One", "Slot One", "Slot Two", "Slot Three");
+    }
+
+    @Test
+    @DisplayName("RB room: the receiver ladders are excluded")
+    void backfieldRoomExcludesReceivers() {
+        List<Player> room = playerRepository
+                .findByTeamAndDepthChartPositionInOrderByDepthChartPositionAscDepthChartOrderAsc(
+                        "CIN", Set.of("RB"));
+
+        assertThat(room).extracting(Player::getFullName).containsExactly("Back One");
     }
 }

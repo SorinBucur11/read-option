@@ -1,10 +1,14 @@
 package app.readoption.team;
 
+import app.readoption.player.Player;
+import app.readoption.player.PlayerRepository;
 import org.springframework.stereotype.Service;
 
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -27,6 +31,18 @@ public class TeamContextService {
     public static final String OPPONENTS_NOT_SYNCED = "unknown - schedule not synced";
 
     /**
+     * Normalized fantasy position -> the raw depth-chart ladders that compose it.
+     * This is the vocabulary graduation trigger firing (4.3 decision 2): the first
+     * Java branch on the raw vocabulary. A one-way read-boundary map — the landing
+     * column stays raw; no enum.
+     */
+    static final Map<String, Set<String>> POSITION_LADDERS = Map.of(
+            "QB", Set.of("QB"),
+            "RB", Set.of("RB"),
+            "WR", Set.of("LWR", "RWR", "SWR"),
+            "TE", Set.of("TE"));
+
+    /**
      * Deliberately fixed at weeks 1–3: the draft is pre-season, so "next opponents"
      * and "first opponents" coincide. In-season "next from current week" is Phase 5.
      */
@@ -34,11 +50,14 @@ public class TeamContextService {
 
     private final NflTeamRepository nflTeamRepository;
     private final TeamScheduleRepository scheduleRepository;
+    private final PlayerRepository playerRepository;
 
     public TeamContextService(NflTeamRepository nflTeamRepository,
-                              TeamScheduleRepository scheduleRepository) {
+                              TeamScheduleRepository scheduleRepository,
+                              PlayerRepository playerRepository) {
         this.nflTeamRepository = nflTeamRepository;
         this.scheduleRepository = scheduleRepository;
+        this.playerRepository = playerRepository;
     }
 
     /** Bye + weeks 1–3 opponents for one player's team (profile enrichment). */
@@ -51,13 +70,51 @@ public class TeamContextService {
             // e.g. stale OAK: degrade loudly, never remap.
             return new TeamContext(BYE_UNKNOWN_NO_TEAM, List.of(OPPONENTS_UNAVAILABLE));
         }
+        return knownTeamContext(nflTeam, season);
+    }
 
+    /**
+     * The team-room read behind {@code get_team_context}: schedule facts plus every
+     * player on the team's ladder(s) for a <b>normalized</b> position filter (null =
+     * all four fantasy ladders), ordered ladder-then-order. Empty for an unknown
+     * team — the tool layer owns the loud degradation string; an unknown position
+     * filter throws (a model-supplied bad argument, the error-tool-response path).
+     */
+    public Optional<TeamRoom> teamRoom(String team, String position, int season) {
+        Set<String> ladders = ladders(position);
+        NflTeam nflTeam = nflTeamRepository.findById(team).orElse(null);
+        if (nflTeam == null) {
+            return Optional.empty();
+        }
+        TeamContext context = knownTeamContext(nflTeam, season);
+        List<Player> players = playerRepository
+                .findByTeamAndDepthChartPositionInOrderByDepthChartPositionAscDepthChartOrderAsc(
+                        team, ladders);
+        return Optional.of(new TeamRoom(context.byeWeek(), context.earlyOpponents(), players));
+    }
+
+    private static Set<String> ladders(String position) {
+        if (position == null) {
+            return POSITION_LADDERS.values().stream()
+                    .flatMap(Set::stream)
+                    .collect(Collectors.toUnmodifiableSet());
+        }
+        Set<String> ladder = POSITION_LADDERS.get(position);
+        if (ladder == null) {
+            throw new IllegalArgumentException("No depth-chart ladder for position '"
+                    + position + "' - valid filters are QB, RB, WR, TE");
+        }
+        return ladder;
+    }
+
+    private TeamContext knownTeamContext(NflTeam nflTeam, int season) {
         String byeWeek = nflTeam.getByeWeek() != null
                 ? String.valueOf(nflTeam.getByeWeek())
                 : BYE_UNKNOWN;
 
         List<TeamSchedule> earlyWeeks = scheduleRepository
-                .findByTeamAndSeasonAndWeekLessThanEqualOrderByWeekAsc(team, season, EARLY_WEEKS);
+                .findByTeamAndSeasonAndWeekLessThanEqualOrderByWeekAsc(
+                        nflTeam.getAbbrev(), season, EARLY_WEEKS);
         List<String> earlyOpponents = earlyWeeks.isEmpty()
                 ? List.of(OPPONENTS_NOT_SYNCED)
                 : earlyWeeks.stream().map(TeamContextService::formatOpponent).toList();
@@ -95,5 +152,9 @@ public class TeamContextService {
 
     /** One team's draft-relevant schedule facts, already degraded to loud strings. */
     public record TeamContext(String byeWeek, List<String> earlyOpponents) {
+    }
+
+    /** A known team's schedule facts plus its depth-chart room (raw entity rows). */
+    public record TeamRoom(String byeWeek, List<String> earlyOpponents, List<Player> players) {
     }
 }

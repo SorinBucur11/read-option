@@ -3729,3 +3729,416 @@ green (28 new).
   review is the catch; the regression test should make the two sources disagree
 - Request-side and execution-side logs answer different questions — an agent needs both, and the
   failure case (orphaned request with no execution) is where both-ends logging earns its keep
+
+### Phase 4.3 — Current-Context Ingestion (SQL Retrievers) ✅ COMPLETE
+
+The structured half of the 4.2 starvation list — teams, schedule, depth charts, injury
+status — landed as deterministic SQL retrieval flowing through the EXISTING tools. No new
+Spring AI surface: the increment widened what flows through the agent, not the agent
+itself. Four commits (A–D), designed here from an empirical source audit, built by Claude
+Code, reviewed as diffs. 287 tests green at close (34 new over 4.2's 253).
+
+### Phase 4.3 — What I built (concrete)
+
+- **The source audit came FIRST** — payload profiling before any DDL. `jq` distinct-value
+  profiles over the Sleeper blob and a live ESPN schedule payload decided the schema:
+  32 raw `depth_chart_position` values (incl. `LWR`/`RWR`/`SWR` — the receiver split),
+  9 `injury_status` values, **33 team codes for 32 teams** (stale `OAK` on active
+  players), **2,199 active players with NULL team** (the free-agent pool — two-thirds of
+  actives), and exactly one abbreviation divergence between providers (Sleeper `WAS` /
+  ESPN `WSH`).
+- **V13** — `nfl_team` (Sleeper abbrev PK = canonical, `espn_abbrev` crosswalk column,
+  derived `bye_week`), `team_schedule` (team-week rows, PK `(team, season, week)`, no FK
+  — landing semantics, each game twice), five raw-vocabulary columns on `player`
+  (`depth_chart_position`, `depth_chart_order`, `injury_status`, `injury_body_part`,
+  `injury_notes`). **V14** — the 32-team seed, no OAK, WAS/WSH the single crosswalk row.
+  DDL/DML split deliberate (schema change vs reference-data load — bank release-script
+  discipline).
+- **The depth chart is a query, not a table.** Two columns on `player` + `WHERE team = ?
+  AND depth_chart_position = ? ORDER BY depth_chart_order`. A team-shaped depth chart
+  would be a repeating group (1NF) and would duplicate player→team membership the player
+  row already owns.
+- **`EspnScheduleClient`** (site API host — no `X-Fantasy-Filter`, its own small client)
+  + **`TeamScheduleSyncService`**: hard `seasonType.type == 2` filter (preseason weeks
+  collide with the PK and poison bye derivation), ESPN→Sleeper crosswalk applied ONCE at
+  the write boundary (unknown abbrev throws — vocabulary surprises never land),
+  delete-and-reload per `(team, season)`, **loud bye derivation** (exactly 17 rows +
+  exactly one missing week in 1..18, else null + WARN — an absent bye is recoverable, a
+  wrong one poisons every roster read). **`TeamScheduleWriter`** as a separate bean so
+  the `@Transactional` proxy applies — READ (HTTP, no txn) → WRITE (one short txn per
+  team), the reconciliation phasing at sync scale.
+- **`TeamContextService`** — the single home of the degradation vocabulary and all
+  player→team context reads. LEFT-JOIN posture everywhere: null team, unknown team
+  (stale OAK), missing bye, unsynced schedule each produce a DISTINCT loud string —
+  never a dropped row, never a silent OAK→LV remap.
+- **`PlayerProfileView` role block** — raw depth position + order, `depthChartAhead`
+  scoped to the RAW sub-position ladder (an order-2 SWR sees only the order-1 SWR, never
+  the LWR/RWR starters), the status-gated injury trio, bye + weeks-1–3 opponents.
+  **`DraftStateView` roster entries gained bye weeks** — shared-bye risk visible without
+  a new tool. Tool descriptions updated to advertise the new facts.
+- **Commit D (correctness, own commit):** the merge-based player upsert was nulling
+  every column the Sleeper blob doesn't carry — `espn_id` (reported) AND `created_at`
+  (found by auditing the mechanism). Fix: carry non-source-owned columns forward from
+  the existing row; regression test seeds both and asserts both survive a plain sync.
+- **Sync + verification:** 32/32 teams synced, 17 weeks each, all byes derived;
+  draftable-board coverage profiled BEFORE judging the agent (409 mart rows: 20 no-team,
+  21 no-depth, 58 with injury status, 8 without espn_id).
+
+### Phase 4.3 — What I learned
+
+- **Audit the source empirically before designing the schema — profile columns, not
+  sample rows.** Three sample players can't prove a vocabulary is closed; the source's
+  `SELECT DISTINCT` (a `jq unique` over the blob) can. The audit killed a wrong design
+  (depth chart on a team table), found the crosswalk row, and surfaced two dirty-data
+  populations before they could become agent-quality mysteries.
+  - **Interview line:** *"When a landing column's vocabulary decides the design, I
+    profile distinct values, not sample rows — my audit found 33 team codes for 32
+    teams and a receiver vocabulary that split one fantasy position into three ladders.
+    Both findings were schema-shaping; neither was visible in sample rows."*
+
+- **Dirty source data is a certainty; the design decides WHERE it surfaces.** The write
+  side throws loud on a code it can't crosswalk; the read side LEFT-JOINs and degrades
+  to explicit "unavailable" strings. An INNER JOIN would have silently dropped every
+  free agent and stale-OAK player from profiles — the worst outcome, quiet.
+  - **Interview line:** *"I treat unknown vocabulary asymmetrically by boundary: the
+    write side throws loudly on a code it can't crosswalk, the read side LEFT-JOINs and
+    degrades to 'context unavailable' instead of dropping rows. Dirty data will arrive;
+    the design decides whether it surfaces visibly or vanishes silently."*
+
+- **Landing columns store the source's raw vocabulary; normalization is driven by the
+  READER, not by tidiness.** The consumer of `injury_status` and `depth_chart_position`
+  is the LLM, which reads `IR`, `PUP`, `SWR` natively — an enum would be a translation
+  layer with no reader on the other side. The graduation trigger: the first time JAVA
+  logic must branch on a value (it fired in 4.3.1 — see below).
+  - **Interview line:** *"I normalize a landing column to a domain enum only when Java
+    logic branches on it. My injury and depth columns feed an LLM, which reads the
+    source vocabulary natively — normalization is driven by the reader, and until 4.3.1
+    there was no Java reader."*
+
+- **Hibernate flushes in a FIXED action order — inserts before deletes — so
+  delete-and-reload with identical composite PKs collides under a derived `deleteBy`.**
+  Two mechanics conspire: the ActionQueue runs INSERTs before entity DELETEs regardless
+  of call order, and a derived delete loads entities into the persistence context first
+  (select-then-remove), so old and new rows with the same identifier collide as
+  `NonUniqueObjectException`. The bulk JPQL `@Modifying` delete executes immediately as
+  SQL, bypassing both — which is exactly why `flushAutomatically` (push pending changes
+  down first) and `clearAutomatically` (detach stale managed rows after) exist. Caught
+  live by the `@DataJpaTest` re-sync case against the real container. Banking analogy:
+  a direct SQL purge doesn't consult the end-of-day posting queue — flush the queue
+  before, reconcile after.
+  - **Interview line:** *"Hibernate flushes in a fixed action order — inserts before
+    deletes — so delete-and-reload with identical primary keys collides under a derived
+    delete. I use a bulk JPQL delete, which executes immediately and bypasses the
+    persistence context, with flushAutomatically and clearAutomatically keeping the
+    context honest on both sides of the bypass, and an integration test that re-syncs
+    the same keys against the real database."*
+
+- **JPA merge copies the detached entity's ENTIRE state — null is a value like any
+  other.** Every field the source payload doesn't carry must be explicitly carried
+  forward from the existing row, or it's silently nulled on every re-sync. `Persistable`
+  controls WHICH path (persist vs merge); it does nothing about WHAT merge copies.
+  Proven by a production natural experiment: before/after sync counts showed exactly
+  3,217 of 3,221 rows (the pre-existing population) lost `created_at`, while the 4 new
+  rows kept it — and `updated_at` survived everywhere because `@PreUpdate` re-derives it
+  on every write. Two maintenance mechanisms, two different fates.
+  - **Interview line:** *"JPA merge copies the detached entity's entire state onto the
+    managed row — null included. My sync built fresh entities from the source payload,
+    so every column the source doesn't carry was silently nulled on each re-sync. I
+    proved it with a before/after count — exactly the pre-existing rows lost the field
+    — and the fix enumerates the non-source-owned columns and carries each forward."*
+
+- **When fixing a bug, audit the MECHANISM's blast radius, not the symptom's field.**
+  The reported bug was "espn_id gets nulled"; the mechanism was "merge overwrites every
+  column the blob doesn't source." Enumerating the non-source-owned columns found the
+  second casualty (`created_at`) before it was ever reported.
+  - **Interview line:** *"When I fix a bug, the blast radius I audit is the mechanism's,
+    not the symptom's. The reported field was one of two — the same merge that nulled
+    the crosswalk id had been nulling the creation timestamp on every sync, silently,
+    because the column was nullable and nothing read it."*
+
+- **Defensive code is split by WHO OWNS the invariant.** An invariant my own types
+  enforce gets documented, not defended (the `ELSE adpPpr` branch — only our enum can
+  reach it). An invariant a vendor's data pipeline upholds gets an active gate and a
+  COUNTERFACTUAL fixture (the injury trio: Sleeper currently clears all three fields
+  together — verified by one `jq` count, on one day's payload — but that's their
+  implementation detail, and a breach arrives silently on the next sync). The fixture
+  manufactures data the source doesn't currently produce, because its job is to pin our
+  behavior for the day it does.
+  - **Interview line:** *"I split defensive coding by who owns the invariant. An
+    invariant my own types enforce gets documented — nothing outside the repo can breach
+    it. An invariant a vendor's pipeline upholds gets an active gate and a
+    counterfactual fixture, because I verified it exactly once, on one day's payload."*
+
+- **Hibernate 6 maps every attribute along two axes — a JavaType and a JdbcType — and
+  `ddl-auto=validate` checks the JDBC axis.** A plain `Integer` expects `integer`, meets
+  the DDL's `SMALLINT`, and fails startup. `@JdbcTypeCode(SqlTypes.SMALLINT)` overrides
+  only the JDBC axis: the schema is the contract, the ORM adapts — not the other way.
+  - **Interview line:** *"Hibernate 6 maps attributes along two axes — Java type and
+    JDBC type — and schema validation checks the JDBC axis. When my column is SMALLINT
+    and my field is Integer, I override the JDBC axis with @JdbcTypeCode rather than
+    widening the column: the schema is the contract."*
+
+- **Docker: published ports are for host traffic; `docker exec` runs inside the
+  container's network namespace.** `psql` wasn't on the Windows host, but the Postgres
+  image ships its own client — `docker compose exec postgres psql ...` on the container's
+  native 5432; the 5433 mapping only exists for connections crossing the boundary.
+  - **Interview line:** *"Published ports translate traffic entering from the host;
+    docker exec puts you behind the translation, so the service is just on its native
+    port."*
+
+- **Coverage-profile the data BEFORE judging the agent on it.** The pre-acceptance
+  queries (95% of the draftable board has role data, 5% genuine free agents, 1-in-7
+  carrying injury status) turn a vague transcript into an explainable one — a weak
+  answer about a specific player is checkable against known coverage instead of becoming
+  a model-quality mystery.
+
+### Phase 4.3 — Mistakes & lessons
+
+- **The F4 fix as first delivered treated the symptom field.** The delegate fixed
+  `espn_id` and stopped; the review asked "what ELSE does this mechanism touch," found
+  `created_at`, and a production query confirmed 3,217 live nulls. Mechanism-scope
+  review is now a standing habit: every quiet-overwrite fix must enumerate the full
+  set of columns the write path doesn't source.
+- **`RestClient.create()` vs the injected builder — the premise correction cut both
+  ways.** I flagged the bare client as convention drift; the delegate checked and found
+  `EspnClient` does the same, so there WAS no drift — it applied the better idiom to the
+  uncommitted code anyway and left the committed client alone. A review conditional is a
+  hypothesis; the delegate verifying it instead of inheriting it is the same discipline
+  we demand in the other direction.
+- **Class-wide `@MockitoSettings(LENIENT)` had no justification** — strict stubbing
+  passed with zero dead stubs once challenged. Lenient-by-default disables the exact
+  tool (dead-stub detection) that catches fixture rot later; it must earn its presence
+  with a concrete strict-mode failure, documented.
+
+### Phase 4.3.1 — Tool-Surface Graduation (findPlayer + getTeamContext) ✅ COMPLETE
+
+The 4.3 acceptance run WROTE the 4.3.1 requirements — the starve-then-retrieve method
+operating at steady state. Two tools graduated from the deferred list on transcript
+evidence, three commits (E, F, H), 310 tests green at close. Findings ledger F1–F9 all
+closed with evidence.
+
+### Phase 4.3.1 — What I built (concrete)
+
+- **`findPlayer` (F7 — Commit E):** name→playerId resolution. Partial, case-insensitive,
+  active-only, capped at 5 candidates; each carries playerId, position, team (NO_TEAM
+  label for free agents), `drafted`/`takenAtPick` against the BOUND session, and
+  `hasProjection`. Batch lookups (one drafted query, one ids-only projection-existence
+  query), empty-result short-circuit, blank name throws (error-tool-response path). The
+  board description gained the truncation warning.
+- **`getTeamContext` (Commit F):** one team's bye + early opponents + the depth-chart
+  ROOM at a normalized position. **`POSITION_LADDERS`** — the 4.3 vocabulary graduation
+  trigger firing, minimally: a one-way read-boundary map (`WR → {LWR, RWR, SWR}`); the
+  landing column stays raw, no enum. Room entries carry playerId (so the handcuff's
+  profile needs no second name-resolution hop), raw ladder + order, the F1-gated injury
+  label (single home: `ProfileScoringService.injuryLabel`, extracted not duplicated),
+  and session drafted flags — computed at the TOOL layer, because pointing the
+  reference-data `team` package at the draft domain would invert the dependency arrow.
+  Unknown team degrades loudly IN THE RESULT (a note naming the bad input); unknown
+  position throws. Case-normalized inputs ("sf"/"rb" → SF/RB).
+- **F8 (description legend):** "LWR/RWR are outside receivers, SWR is the slot receiver"
+  — one sentence that changed the model's reading of the same raw data.
+- **Commit H (F9 — pair-gated degradation):** `depth_chart_position` is the
+  authoritative field of the role pair; position null → order suppressed alongside it.
+  The regression fixture is the REAL arbitration row verbatim (Aiyuk: position null,
+  order 3, status DNR — production data, 2026-07-08). Plus `@JsonInclude(NON_NULL)` on
+  the nested `RoomEntry` (class-level annotations don't cascade to nested records).
+- **Schema-safety test widened to five tools** — each exposing EXACTLY its documented
+  parameters, sessionId/rules still unreachable.
+- **Acceptance:** all four §7 prompts passed live, each a before/after pair against the
+  4.3 transcripts that demanded the tool.
+
+### Phase 4.3.1 — What I learned
+
+- **The agent fabricated a fact from a TRUNCATED VIEW — and the fix was capability +
+  description, not prompt scolding (F7).** Asked about a player below the board's top-N
+  VORP slice, the agent asserted "he's already been taken." He wasn't (ADP 185.6, WR72 —
+  exactly where the diagnosis predicted). The model behaved rationally given its tools:
+  nothing said the view was truncated, and no tool resolved a name, so it invented the
+  most plausible explanation for an absence. After: the same prompt produced a grounded
+  scouting report and correct round-band advice.
+  - **Interview line:** *"My acceptance run caught the agent asserting a player was
+    drafted when he'd simply fallen below the board tool's top-20 slice. It wasn't
+    hallucinating stats — it was making an unsound inference from a truncated view,
+    because no description said the view was truncated and no tool could resolve a
+    name. The fix is capability and description, not prompt scolding."*
+
+- **The graduation rule fired three times in one increment, each on transcript
+  evidence:** `findPlayer` (the fabrication), `getTeamContext` (asked a team-room
+  question, the agent said VERBATIM "my tools only surface depth chart details through
+  individual player profiles … I don't have a way to pull his handcuff's profile without
+  knowing that player's ID" — the requirements written by the capability gap it names),
+  and `POSITION_LADDERS` (the first Java branch on the raw vocabulary — the exact
+  trigger recorded in 4.3's design). And it correctly REFUSED once: I nearly built
+  `get_team_context` early on enthusiasm; the rule demanded the hearing first, and the
+  hearing produced better requirements (playerId on room entries came straight from the
+  failure quote).
+  - **Interview line:** *"I gate every new tool on transcript evidence, and the fourth
+    tool's requirements arrived in the agent's own words — asked a team-room question,
+    it named the exact capability it lacked. The failure transcript is the requirements
+    document; when I was tempted to build the tool early, running the hearing first
+    produced a better field list than my spec had."*
+
+- **Undefined vocabulary outsources interpretation to the model's prior (F8).** The raw
+  `SWR` label passed through the pipeline perfectly, and the model expanded it into
+  "split wide receiver" — wrong, plausible, and invisible unless you know the domain.
+  Correct data and a misinformed user, simultaneously. One legend sentence in the
+  description fixed the reading; a controlled before/after (same player, same facts)
+  proved it.
+  - **Interview line:** *"My pipeline served a raw acronym flawlessly and the model
+    invented the wrong expansion for it. Correct data, misinformed user. Raw vocabulary
+    is fine to serve — undefined vocabulary is not; the legend lives in the tool
+    description, not in a normalization layer nothing else needs."*
+
+- **Degradation must be ATOMIC over fields that are only meaningful together (F9).**
+  The source delivered a rung without a ladder (order 3, position null); the view
+  degraded the fields independently, so the model was handed "role unconfirmed" AND an
+  orphaned number — and faithfully composed them into a contradiction ("role
+  unconfirmed, and third on the depth chart"). The audit showed the contradiction was
+  OURS, not the model's. Pair-gate: the authoritative field of the pair governs both
+  (the F1 injury rule's shape, reapplied). The reverse shape (ladder without rung) stays
+  ungated — partial but not contradictory. Post-fix, the model composed the two honest
+  degradations it could see into an EXPLANATION instead ("role unconfirmed, a direct
+  reflection of that injury uncertainty").
+  - **Interview line:** *"My agent said 'role unconfirmed' and 'third on the depth
+    chart' in one answer — and the audit showed the contradiction was mine: the source
+    sent a rung without a ladder and my view degraded the fields independently.
+    Independent facts degrade independently; paired facts degrade atomically. The
+    regression fixture is the production row that exposed it, verbatim."*
+
+- **The model's capability surface is EXACTLY the `@Tool` methods on the object handed
+  to the loop.** When I wasn't sure whether `get_team_context` existed (an internal
+  service shared its name), the check wasn't the service layer — it was `grep @Tool` and
+  the emitted schema the safety test parses, because that's the only contract the model
+  sees. An internal `@Service` is invisible to it.
+  - **Interview line:** *"When I wasn't sure whether a tool existed, I didn't check the
+    service layer — I checked the emitted tool schema, because the model's capability
+    surface is exactly the annotated methods on the object I hand the loop. Everything
+    else in the codebase doesn't exist for it."*
+
+- **Grounding includes refuting the user.** An acceptance prompt smuggled in a false
+  premise ("even if they have the same bye" — they didn't: weeks 6 and 7, both
+  cross-checked against the sync report), and the enriched agent corrected it from
+  retrieved schedule data instead of accommodating it. Strictly harder than answering a
+  well-posed question, and only possible because the facts sit in tool results rather
+  than the model's imagination.
+  - **Interview line:** *"My acceptance prompt contained a false premise and the
+    enriched agent refuted it from retrieved data instead of accommodating it. Grounding
+    isn't just answering correctly — it's the ability to tell the user their question is
+    wrong."*
+
+- **The degradation path was UNREACHABLE through the agent until findPlayer existed** —
+  playerIds only came from the board slice, and the players whose degradation mattered
+  (free agents) rarely sit in a top-VORP slice. Code pinned by unit tests can still be
+  dead through the capability surface; 4.3's assertion (c) formally moved into 4.3.1's
+  acceptance, where the Cooks prompt closed it: every missing fact reported as
+  explicitly unavailable, and the knowns (a two-year production decline, a near-zero
+  projection) still composed into the right recommendation.
+  - **Interview line:** *"The strongest acceptance transcript wasn't a data-rich player
+    — it was a free agent with almost none. The agent found him by name, reported every
+    missing fact as unavailable, and still composed the knowns into the right call.
+    Grounding was proven on the degradation path, where fabrication is most tempting."*
+
+- **Git's index is CONTENT-granular, not file-granular.** H's hunks shared a file with
+  F's; a plain `git add` would have collapsed the commit boundary the plan protected.
+  `git add -p` stages individual hunks (`s` to split, `e` to hand-edit — and hand-editing
+  is where the separation rule stops paying); `git diff --cached` reviews the staged
+  snapshot before each commit — the review-the-diff discipline applied to my own index.
+  Also: double-letter `git status` (`MM`/`AM`) is two diffs — index vs HEAD, working
+  tree vs index — and committing takes the snapshot, not the file.
+  - **Interview line:** *"Git's index is content-granular — git add -p stages individual
+    hunks, so one file's changes can split cleanly across two commits. I verify each
+    staged snapshot with git diff --cached before committing, because the index is a
+    draft I review, not a formality I pass through."*
+
+- **Permitted model arithmetic gets verified anyway.** "28 points clear of Jefferson"
+  is a subtraction the model performed over engine numbers — allowed by the boundary,
+  and checked regardless: 89.84 − 61.64 = 28.20 ✓, and the implied claim (Jefferson is
+  WR2 by VORP) matched the board ordering. Model math over engine numbers stays on the
+  watch list, not the trust list.
+
+### Phase 4.3.1 — Mistakes & lessons
+
+- **Acceptance ran ahead of review.** The Cooks transcript arrived before E/F's diff and
+  closure report did — acceptance passing proves the happy path, not the safety
+  properties (schema widened, parameters closed, lookups batched). Both evidence types
+  are required, in order; the review caught nothing this time, but "it happened to be
+  fine" is not the process.
+- **The staging plan contained a self-contradiction the delegate diagnosed and then
+  prescribed** — it named the shared-file hunk problem and then said "git add + commit."
+  Closure reports get read for internal consistency, not just completeness.
+- **My spec's field list was wrong twice, and the delegate's deviations were right
+  twice** — playerId on room entries (justified by the verbatim failure quote) and
+  drafted-flags at the tool layer (package dependency direction). The spec-is-intent
+  lesson from 4.2, now with the pattern: the best deviations cite either the transcript
+  or an architectural rule.
+
+### Phase 4.3 / 4.3.1 — To revisit / deferred
+
+- **Staleness guard:** the agent asserted a player's availability from conversation
+  memory (iterations: 0) rather than a fresh state call — fine in a solo session, a
+  risk in a live draft where picks land between turns. System-prompt nudge if it bites;
+  not code.
+- **`created_at` repair:** one-off `UPDATE player SET created_at = updated_at WHERE
+  created_at IS NULL` (approximate — stamps last-sync time). Run once post-Commit-D if
+  not already done; verify with the F6 count query (expect 0 nulls).
+- **HTTP client standardization (widened):** SleeperClient → RestClient; SleeperClient +
+  EspnClient → injected `RestClient.Builder` (EspnScheduleClient already does). One
+  standardization commit, never mixed with a feature.
+- **In-season "next opponents from current week":** earlyOpponents is deliberately fixed
+  at weeks 1–3 (pre-draft, "next" = "first"); Phase 5 introduces a current-week concept.
+- **8 draftable players without espn_id:** DynastyProcess crosswalk gaps, not the F4
+  bug; harmless to 4.3 (schedule keys on team abbrevs). Revisit only if an ESPN-keyed
+  read path appears.
+- **The 4-in-3,221 note:** the four players added between syncs carry only blob-sourced
+  fields until the next id-mapping run — the standing sync-all ordering handles it.
+
+### Phase 4.3 / 4.3.1 — Concepts Cheat-Sheet (additions)
+
+**Hibernate write-path mechanics**
+- Flush runs a FIXED action order (inserts before entity deletes) regardless of call
+  order — delete-and-reload on identical PKs needs a bulk JPQL `@Modifying` delete
+  (executes immediately, bypasses the persistence context) with
+  `flushAutomatically = true` (push pending work first) and `clearAutomatically = true`
+  (detach stale managed rows after)
+- Derived `deleteBy` is select-then-remove → same-id old/new instances collide as
+  `NonUniqueObjectException`
+- Merge copies the detached entity's ENTIRE state, null included — carry every
+  non-source-owned column forward explicitly; `Persistable.isNew()` picks the path,
+  never the payload
+- `@JdbcTypeCode(SqlTypes.SMALLINT)` on `Integer` — Hibernate 6's two-axis type model
+  (JavaType/JdbcType); `ddl-auto=validate` checks the JDBC axis; bend the ORM to the
+  schema
+
+**Retrieval-layer design rules (the 4.3 set)**
+- Profile the source's distinct values before designing the schema; land raw vocabulary;
+  normalize only for a Java reader (the graduation trigger), and then minimally (a
+  one-way read-boundary map, not an enum on the landing column)
+- Write boundary throws on vocabulary it can't crosswalk; read boundary LEFT-JOINs and
+  degrades to distinct loud strings — one home for the vocabulary so views can't drift
+- Derived facts (bye) rebuild on sync with a proof-shaped guard (17 rows + one gap) —
+  absent beats wrong
+- Independent facts degrade independently; PAIRED facts degrade atomically (the
+  authoritative field governs the pair — injury_status over its trio,
+  depth_chart_position over its order)
+- Coverage-profile the data before judging the agent on it
+
+**Agent tool-surface rules (the 4.3.1 set)**
+- A truncated view without a truncation warning invites unsound inference — say so in
+  the description AND provide the resolving capability (name → id)
+- Undefined raw vocabulary outsources interpretation to the model's prior — legends live
+  in descriptions
+- The capability surface is exactly the `@Tool` methods on the loop's object — verify
+  with the emitted schema, not the service layer
+- Graduation rule at steady state: the acceptance run writes the next increment's
+  requirements; the best tool specs quote the failure transcript
+- Session-relative facts (drafted flags) attach at the tool layer, not inside
+  reference-data services — package dependency arrows outrank field convenience
+- Class-level `@JsonInclude` does NOT cascade to nested records
+
+**Git (the commit-boundary set)**
+- The index is content-granular: `git add -p` stages hunks (`s` split, `e` hand-edit);
+  `git diff --cached` reviews the staged snapshot before every commit
+- Double-letter status (`MM`) = two diffs (index↔HEAD, tree↔index); commit takes the
+  snapshot, not the file
+- Testcontainers' "could not find a valid Docker environment" = Docker isn't up yet,
+  not a test failure

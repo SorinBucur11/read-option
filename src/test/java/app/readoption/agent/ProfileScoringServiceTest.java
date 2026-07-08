@@ -71,7 +71,8 @@ class ProfileScoringServiceTest {
     private ProfileScoringService service() {
         return new ProfileScoringService(playerRepository, statsRepository,
                 projectionRepository, new ScoringService(),
-                new TeamContextService(nflTeamRepository, teamScheduleRepository),
+                new TeamContextService(nflTeamRepository, teamScheduleRepository,
+                        playerRepository),
                 CURRENT_SEASON);
     }
 
@@ -329,6 +330,44 @@ class ProfileScoringServiceTest {
         assertThat(profile.byeWeek()).isEqualTo(TeamContextService.BYE_UNKNOWN_NO_TEAM);
         assertThat(profile.earlyOpponents())
                 .containsExactly(TeamContextService.OPPONENTS_UNAVAILABLE);
+    }
+
+    @Test
+    @DisplayName("F9 pair gate: null position + orphaned order 3 -> role block degrades atomically")
+    void orphanedDepthOrderSuppressedWhenPositionNull() {
+        // The F9 arbitration row, verbatim from production data (2026-07-08):
+        // Aiyuk's live Sleeper row carried depth_chart_position = NULL,
+        // depth_chart_order = 3, injury_status = 'DNR'. The fixture makes the
+        // wrong answer available — the ungated code returns order 3 here, and
+        // the model composed it into "role unconfirmed and third on the SF WR
+        // depth chart", an internal contradiction.
+        Player aiyuk = player("A99", "Brandon Aiyuk", "WR", "SF", true);
+        aiyuk.setDepthChartPosition(null);
+        aiyuk.setDepthChartOrder(3);
+        aiyuk.setInjuryStatus("DNR");
+        stubProfileScaffolding(aiyuk);
+
+        PlayerProfileView profile = service().profile("A99", STANDARD_RULES);
+
+        assertThat(profile.depthChartPosition()).isEqualTo("role unconfirmed");
+        assertThat(profile.depthChartOrder()).isNull();    // orphaned rung suppressed
+        assertThat(profile.depthChartAhead()).isNull();    // existing guard, unchanged
+        assertThat(profile.injuryStatus()).isEqualTo("DNR");   // untouched by the gate
+    }
+
+    @Test
+    @DisplayName("reverse shape (position without order) passes through — the gate is one-directional")
+    void positionWithoutOrderPassesThrough() {
+        // "On the RB ladder, rung unknown" is partial but not contradictory —
+        // deliberately NOT gated.
+        Player partial = contextPlayer("P1", "SF", "RB", null);
+        stubProfileScaffolding(partial);
+
+        PlayerProfileView profile = service().profile("P1", STANDARD_RULES);
+
+        assertThat(profile.depthChartPosition()).isEqualTo("RB");   // raw passthrough
+        assertThat(profile.depthChartOrder()).isNull();
+        assertThat(profile.depthChartAhead()).isNull();
     }
 
     @Test

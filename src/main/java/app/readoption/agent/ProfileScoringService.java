@@ -45,6 +45,15 @@ public class ProfileScoringService {
     /** Injury label when no {@code injury_status} is reported. */
     static final String NO_INJURY = "no injury reported";
 
+    /**
+     * The F1 rule, single home: {@code injury_status} is the authoritative flag —
+     * a null status reads as no injury regardless of lingering attribute fields.
+     * Both the profile and the team-room entries speak this label.
+     */
+    static String injuryLabel(Player player) {
+        return player.getInjuryStatus() != null ? player.getInjuryStatus() : NO_INJURY;
+    }
+
     private final PlayerRepository playerRepository;
     private final PlayerStatsRepository statsRepository;
     private final PlayerProjectionRepository projectionRepository;
@@ -94,16 +103,22 @@ public class ProfileScoringService {
         // a cleared status must read as no injury, never a floating concern.
         boolean injuryReported = player.getInjuryStatus() != null;
 
+        // The F9 rule, same shape as F1: depth_chart_position is the authoritative
+        // field of the pair, and the pair degrades atomically — an order without a
+        // ladder is an orphaned number that invites model synthesis ("role
+        // unconfirmed and third on the depth chart"). The reverse shape (position
+        // without order) is partial but not contradictory, so it passes through.
+        boolean roleConfirmed = player.getDepthChartPosition() != null;
+
         return new PlayerProfileView(
                 player.getId(),
                 player.getFullName(),
                 player.getPosition(),
                 player.getTeam() != null ? player.getTeam() : TeamContextService.NO_TEAM,
-                player.getDepthChartPosition() != null
-                        ? player.getDepthChartPosition() : ROLE_UNCONFIRMED,
-                player.getDepthChartOrder(),
+                roleConfirmed ? player.getDepthChartPosition() : ROLE_UNCONFIRMED,
+                roleConfirmed ? player.getDepthChartOrder() : null,
                 depthChartAhead(player),
-                injuryReported ? player.getInjuryStatus() : NO_INJURY,
+                injuryLabel(player),
                 injuryReported ? player.getInjuryBodyPart() : null,
                 injuryReported ? player.getInjuryNotes() : null,
                 teamContext.byeWeek(),

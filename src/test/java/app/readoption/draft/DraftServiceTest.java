@@ -56,7 +56,8 @@ class DraftServiceTest {
     private DraftService service() {
         return new DraftService(sessionRepository, pickRepository, playerRepository,
                 leagueConfigRepository,
-                new TeamContextService(nflTeamRepository, teamScheduleRepository), SEASON);
+                new TeamContextService(nflTeamRepository, teamScheduleRepository,
+                        playerRepository), SEASON);
     }
 
     /** 1 QB / 2 RB / 2 WR / 1 TE / 1 FLEX(RB,WR) / 0 SF / 6 bench = 13 rounds. */

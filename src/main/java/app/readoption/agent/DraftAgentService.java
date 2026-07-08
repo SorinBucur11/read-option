@@ -4,15 +4,20 @@ import app.readoption.agent.dto.AdviceResponse;
 import app.readoption.customization.LeagueConfig;
 import app.readoption.customization.LeagueConfigNotFoundException;
 import app.readoption.customization.LeagueConfigRepository;
+import app.readoption.draft.DraftPickRepository;
 import app.readoption.draft.DraftService;
 import app.readoption.draft.DraftSession;
 import app.readoption.draft.DraftSessionNotFoundException;
 import app.readoption.draft.DraftSessionRepository;
 import app.readoption.draft.InvalidDraftRequestException;
+import app.readoption.player.PlayerRepository;
+import app.readoption.playerprojection.PlayerProjectionRepository;
 import app.readoption.scoring.ScoringRules;
+import app.readoption.team.TeamContextService;
 import app.readoption.valuation.DraftBoardService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
@@ -59,6 +64,11 @@ public class DraftAgentService {
     private final DraftService draftService;
     private final DraftBoardService draftBoardService;
     private final ProfileScoringService profileScoringService;
+    private final PlayerRepository playerRepository;
+    private final PlayerProjectionRepository projectionRepository;
+    private final DraftPickRepository draftPickRepository;
+    private final TeamContextService teamContextService;
+    private final int currentSeason;
 
     public DraftAgentService(ChatModel chatModel,
                              ToolCallingManager toolCallingManager,
@@ -69,7 +79,12 @@ public class DraftAgentService {
                              LeagueConfigRepository leagueConfigRepository,
                              DraftService draftService,
                              DraftBoardService draftBoardService,
-                             ProfileScoringService profileScoringService) {
+                             ProfileScoringService profileScoringService,
+                             PlayerRepository playerRepository,
+                             PlayerProjectionRepository projectionRepository,
+                             DraftPickRepository draftPickRepository,
+                             TeamContextService teamContextService,
+                             @Value("${readoption.current-season}") int currentSeason) {
         this.chatModel = chatModel;
         this.toolCallingManager = toolCallingManager;
         this.chatMemory = chatMemory;
@@ -80,6 +95,11 @@ public class DraftAgentService {
         this.draftService = draftService;
         this.draftBoardService = draftBoardService;
         this.profileScoringService = profileScoringService;
+        this.playerRepository = playerRepository;
+        this.projectionRepository = projectionRepository;
+        this.draftPickRepository = draftPickRepository;
+        this.teamContextService = teamContextService;
+        this.currentSeason = currentSeason;
     }
 
     /**
@@ -98,8 +118,10 @@ public class DraftAgentService {
 
         // sessionId and rules are bound server-side on the per-request tools instance —
         // the model's tool schema has no field for either.
-        DraftAgentTools tools = new DraftAgentTools(sessionId, rules,
-                draftService, draftBoardService, profileScoringService);
+        DraftAgentTools tools = new DraftAgentTools(sessionId, rules, currentSeason,
+                draftService, draftBoardService, profileScoringService,
+                playerRepository, projectionRepository, draftPickRepository,
+                teamContextService);
         ToolCallingChatOptions options = ToolCallingChatOptions.builder()
                 .model(properties.model())
                 .toolCallbacks(ToolCallbacks.from(tools))

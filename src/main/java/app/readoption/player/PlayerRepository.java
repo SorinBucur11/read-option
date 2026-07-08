@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -21,7 +22,20 @@ public interface PlayerRepository extends JpaRepository<Player, String> {
     List<Player> findByTeamAndDepthChartPositionAndDepthChartOrderLessThanOrderByDepthChartOrderAsc(
             String team, String depthChartPosition, Integer depthChartOrder);
 
+    /**
+     * A team's depth-chart room across one or more raw ladders (e.g. WR spans
+     * LWR/RWR/SWR), ordered ladder-then-order — the get_team_context read.
+     */
+    List<Player> findByTeamAndDepthChartPositionInOrderByDepthChartPositionAscDepthChartOrderAsc(
+            String team, Collection<String> depthChartPositions);
+
     List<Player> findByTeam(String team);
+
+    /**
+     * The find_player search: partial, case-insensitive, active only, capped at 5.
+     * Name order makes ambiguous results deterministic for the model to pick from.
+     */
+    List<Player> findTop5ByActiveTrueAndFullNameContainingIgnoreCaseOrderByFullNameAsc(String name);
 
     List<Player> findByActiveTrue();
 

@@ -3,14 +3,18 @@ package app.readoption.agent;
 import app.readoption.agent.dto.AdviceResponse;
 import app.readoption.customization.LeagueConfig;
 import app.readoption.customization.LeagueConfigRepository;
+import app.readoption.draft.DraftPickRepository;
 import app.readoption.draft.DraftService;
 import app.readoption.draft.DraftSession;
 import app.readoption.draft.DraftSessionNotFoundException;
 import app.readoption.draft.DraftSessionRepository;
 import app.readoption.draft.DraftStatus;
 import app.readoption.draft.InvalidDraftRequestException;
+import app.readoption.player.PlayerRepository;
+import app.readoption.playerprojection.PlayerProjectionRepository;
 import app.readoption.scoring.Position;
 import app.readoption.scoring.ReceptionFormat;
+import app.readoption.team.TeamContextService;
 import app.readoption.valuation.DraftBoardService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -72,6 +76,10 @@ class DraftAgentServiceTest {
     @Mock private DraftService draftService;
     @Mock private DraftBoardService draftBoardService;
     @Mock private ProfileScoringService profileScoringService;
+    @Mock private PlayerRepository playerRepository;
+    @Mock private PlayerProjectionRepository projectionRepository;
+    @Mock private DraftPickRepository draftPickRepository;
+    @Mock private TeamContextService teamContextService;
 
     private ChatMemory memory;
 
@@ -89,7 +97,9 @@ class DraftAgentServiceTest {
                 "You are a draft advisor.".getBytes(StandardCharsets.UTF_8)));
         return new DraftAgentService(chatModel, toolCallingManager, memory, promptBuilder,
                 properties, sessionRepository, leagueConfigRepository,
-                draftService, draftBoardService, profileScoringService);
+                draftService, draftBoardService, profileScoringService,
+                playerRepository, projectionRepository, draftPickRepository,
+                teamContextService, 2026);
     }
 
     private void stubSession() {
