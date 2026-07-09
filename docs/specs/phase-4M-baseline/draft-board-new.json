@@ -1,0 +1,171 @@
+{
+  "season": 2026,
+  "replacementLevels": {
+    "QB": 338.17,
+    "RB": 155.41,
+    "WR": 157.70,
+    "TE": 123.40
+  },
+  "rows": [
+    {
+      "playerId": "4034",
+      "name": "Christian McCaffrey",
+      "position": "RB",
+      "projectedPoints": 282.53,
+      "vorp": 127.12,
+      "adp": 6.90
+    },
+    {
+      "playerId": "5850",
+      "name": "Josh Jacobs",
+      "position": "RB",
+      "projectedPoints": 254.51,
+      "vorp": 99.10,
+      "adp": 25.20
+    },
+    {
+      "playerId": "3198",
+      "name": "Derrick Henry",
+      "position": "RB",
+      "projectedPoints": 250.37,
+      "vorp": 94.96,
+      "adp": 25.10
+    },
+    {
+      "playerId": "7547",
+      "name": "Amon-Ra St. Brown",
+      "position": "WR",
+      "projectedPoints": 247.54,
+      "vorp": 89.84,
+      "adp": 12.60
+    },
+    {
+      "playerId": "12527",
+      "name": "Ashton Jeanty",
+      "position": "RB",
+      "projectedPoints": 241.21,
+      "vorp": 85.80,
+      "adp": 14.50
+    },
+    {
+      "playerId": "7588",
+      "name": "Javonte Williams",
+      "position": "RB",
+      "projectedPoints": 239.25,
+      "vorp": 83.84,
+      "adp": 40.60
+    },
+    {
+      "playerId": "12507",
+      "name": "Omarion Hampton",
+      "position": "RB",
+      "projectedPoints": 234.33,
+      "vorp": 78.92,
+      "adp": 16.50
+    },
+    {
+      "playerId": "4984",
+      "name": "Josh Allen",
+      "position": "QB",
+      "projectedPoints": 412.81,
+      "vorp": 74.64,
+      "adp": 24.20
+    },
+    {
+      "playerId": "13287",
+      "name": "Jeremiyah Love",
+      "position": "RB",
+      "projectedPoints": 228.88,
+      "vorp": 73.47,
+      "adp": 20.50
+    },
+    {
+      "playerId": "8151",
+      "name": "Kenneth Walker",
+      "position": "RB",
+      "projectedPoints": 228.76,
+      "vorp": 73.35,
+      "adp": 19.10
+    },
+    {
+      "playerId": "8130",
+      "name": "Trey McBride",
+      "position": "TE",
+      "projectedPoints": 194.25,
+      "vorp": 70.85,
+      "adp": 20.70
+    },
+    {
+      "playerId": "11604",
+      "name": "Brock Bowers",
+      "position": "TE",
+      "projectedPoints": 190.65,
+      "vorp": 67.25,
+      "adp": 20.60
+    },
+    {
+      "playerId": "9224",
+      "name": "Chase Brown",
+      "position": "RB",
+      "projectedPoints": 222.35,
+      "vorp": 66.94,
+      "adp": 17.90
+    },
+    {
+      "playerId": "6794",
+      "name": "Justin Jefferson",
+      "position": "WR",
+      "projectedPoints": 219.34,
+      "vorp": 61.64,
+      "adp": 15.80
+    },
+    {
+      "playerId": "7543",
+      "name": "Travis Etienne",
+      "position": "RB",
+      "projectedPoints": 208.04,
+      "vorp": 52.63,
+      "adp": 38.10
+    },
+    {
+      "playerId": "8150",
+      "name": "Kyren Williams",
+      "position": "RB",
+      "projectedPoints": 204.89,
+      "vorp": 49.48,
+      "adp": 34.90
+    },
+    {
+      "playerId": "7569",
+      "name": "Nico Collins",
+      "position": "WR",
+      "projectedPoints": 202.22,
+      "vorp": 44.52,
+      "adp": 23.70
+    },
+    {
+      "playerId": "5859",
+      "name": "A.J. Brown",
+      "position": "WR",
+      "projectedPoints": 201.05,
+      "vorp": 43.35,
+      "adp": 19.60
+    },
+    {
+      "playerId": "8137",
+      "name": "George Pickens",
+      "position": "WR",
+      "projectedPoints": 198.78,
+      "vorp": 41.08,
+      "adp": 28.30
+    },
+    {
+      "playerId": "8155",
+      "name": "Breece Hall",
+      "position": "RB",
+      "projectedPoints": 195.60,
+      "vorp": 40.19,
+      "adp": 34.40
+    }
+  ]
+}

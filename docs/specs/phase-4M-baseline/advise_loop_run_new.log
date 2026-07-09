@@ -1,0 +1,16 @@
+2026-07-09T18:29:37.546+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentService   : iter 0 | hasToolCalls=true | tools=[getDraftState{}, getDraftBoard{}] | in=1924 out=71 | cumulative_in=1924 | 3190 ms
+2026-07-09T18:29:37.551+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentTools     : tool exec -> getDraftState [session 4]
+2026-07-09T18:29:37.653+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentTools     : tool exec <- getDraftState [session 4] pick 12 | 100 ms
+2026-07-09T18:29:37.661+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentTools     : tool exec -> getDraftBoard [session 4] position=null limit=null
+2026-07-09T18:29:37.778+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentTools     : tool exec <- getDraftBoard [session 4] 20 rows | 116 ms
+2026-07-09T18:29:41.605+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentService   : iter 1 | hasToolCalls=true | tools=[getPlayerProfile{"playerId":"7547"}, getPlayerProfile{"playerId":"8130"}, getPlayerProfile{"playerId":"11604"}, getPlayerProfile{"playerId":"6794"}] | in=3141 out=204 | cumulative_in=5065 | 3819 ms
+2026-07-09T18:29:41.605+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentTools     : tool exec -> getPlayerProfile [session 4] playerId=7547
+2026-07-09T18:29:41.671+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentTools     : tool exec <- getPlayerProfile [session 4] 5 history seasons | 64 ms
+2026-07-09T18:29:41.676+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentTools     : tool exec -> getPlayerProfile [session 4] playerId=8130
+2026-07-09T18:29:41.690+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentTools     : tool exec <- getPlayerProfile [session 4] 5 history seasons | 14 ms
+2026-07-09T18:29:41.691+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentTools     : tool exec -> getPlayerProfile [session 4] playerId=11604
+2026-07-09T18:29:41.704+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentTools     : tool exec <- getPlayerProfile [session 4] 5 history seasons | 12 ms
+2026-07-09T18:29:41.706+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentTools     : tool exec -> getPlayerProfile [session 4] playerId=6794
+2026-07-09T18:29:41.718+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentTools     : tool exec <- getPlayerProfile [session 4] 5 history seasons | 12 ms
+2026-07-09T18:29:53.276+03:00 DEBUG 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentService   : iter 2 | hasToolCalls=false | tools=[] | in=4618 out=407 | cumulative_in=9683 | 11558 ms
+2026-07-09T18:29:53.277+03:00  INFO 12848 --- [read-option] [nio-8080-exec-1] app.readoption.agent.DraftAgentService   : Draft advice session 4: 2 tool iterations, 10365 total tokens, 18922 ms

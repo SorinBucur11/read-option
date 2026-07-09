@@ -1,0 +1,29 @@
+ player_id |  source  |          jsonb_pretty          
+-----------+----------+--------------------------------
+ 10210     | rotowire | {                             +
+           |          |     "team": "PHI",            +
+           |          |     "stats": {                +
+           |          |         "rec": 2.0,           +
+           |          |         "rec_td": null,       +
+           |          |         "rec_yd": 20.0,       +
+           |          |         "adp_ppr": 999.0,     +
+           |          |         "adp_std": 999.0,     +
+           |          |         "pass_td": null,      +
+           |          |         "pass_yd": null,      +
+           |          |         "pts_ppr": 4.0,       +
+           |          |         "pts_std": 2.0,       +
+           |          |         "rec_2pt": null,      +
+           |          |         "rush_td": null,      +
+           |          |         "rush_yd": null,      +
+           |          |         "fum_lost": null,     +
+           |          |         "pass_2pt": null,     +
+           |          |         "pass_int": null,     +
+           |          |         "rush_2pt": null,     +
+           |          |         "adp_half_ppr": 999.0,+
+           |          |         "pts_half_ppr": 3.0   +
+           |          |     },                        +
+           |          |     "company": "rotowire",    +
+           |          |     "player_id": "10210"      +
+           |          | }
+(1 row)
+
