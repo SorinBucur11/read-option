@@ -64,7 +64,7 @@ asserted in-suite — R-1/R-2 satisfied by the green run.
   so the lenient posture stays visible). Bare `new ObjectMapper()` in tests →
   `new JsonMapper()`. `@WebMvcTest` slices keep injecting by `ObjectMapper` supertype —
   Boot 4's auto-configured `JsonMapper` satisfies it.
-- [x] **F-8** Spring AI 2.0 agent loop (§4a): removed
+- [x] **F-8 (amended by F-12)** Spring AI 2.0 agent loop (§4a): removed
   `.internalToolExecutionEnabled(false)` (no replacement; external execution is the only
   mode). Loop structure, iteration cap, DEBUG instrumentation byte-identical in intent.
   `ToolCallingManager.executeToolCalls(Prompt, ChatResponse)` and
@@ -72,6 +72,32 @@ asserted in-suite — R-1/R-2 satisfied by the green run.
   Verified `ToolCallingManager` **bean is still auto-configured**
   (`ToolCallingAutoConfiguration` in `spring-ai-autoconfigure-model-tool:2.0.0`) — the
   constructor injection in `DraftAgentService` still resolves at startup.
+  **The first migration of the options build was WRONG** — see F-12.
+- [x] **F-12 (correctness fix, own commit)** — the 2.0 SDK-backed Anthropic module does
+  **not merge** prompt options with configured defaults. `AnthropicChatModel` source:
+  a prompt options instance that is not `AnthropicChatOptions` is **discarded wholesale**
+  and replaced with a blank `AnthropicChatOptions.builder().build()`; defaults apply only
+  when the prompt carries *no* options. The migrated generic
+  `ToolCallingChatOptions.builder()` therefore shipped requests with **no tools, no
+  model override, no max-tokens** — live symptom: `iterations: 0`, 607 tokens, model
+  hallucinating `<function_calls>` XML in the advice text. In-suite tests could not
+  catch it (mocked ChatModel watches the loop, not the HTTP body). Fix: derive FULL
+  provider-typed options from the configured defaults —
+  `((AnthropicChatOptions) chatModel.getOptions()).mutate().model(properties.model()).toolCallbacks(…).build()`
+  (`getOptions()`, not `getDefaultOptions()` — the latter is `@Deprecated(forRemoval)`).
+  This mirrors what `ChatClient` does internally in 2.0
+  (`DefaultChatClientUtils`: `chatModel.getOptions().mutate()` + `combineWith(request)`),
+  which is also why **`VerdictClassifier`/`LeagueParsingService` are NOT affected** —
+  the ChatClient layer performs the defaults merge for them (verified in 2.0 sources).
+  Evidence, wire-level (`ANTHROPIC_LOG=debug`, one live advise on frozen session 4):
+  outbound body carries `"tools"` with exactly the five schemas
+  (getDraftState/getDraftBoard/getPlayerProfile/findPlayer/getTeamContext),
+  `"max_tokens":2000`, `"temperature":0.3`, `"model":"claude-sonnet-4-6"`; response:
+  2 iterations (baseline 2), 10,369 tokens (band 9,000–17,000), advice cites board
+  digits exactly (VORP 89.84 / 247.54 proj / ADP 12.60 / Jefferson 61.64).
+  Regression pinned in-suite: `DraftAgentServiceTest.promptOptionsAreFullAnthropicOptions`
+  asserts the Prompt carries `AnthropicChatOptions` with defaults preserved, the
+  per-agent model override, and all five tool callbacks.
 - [x] **F-9** Spring AI 2.0 options (§4b): `ChatClient…options(...)` now takes the
   options **builder** (the built-`ChatOptions` overload is gone) — adapted the two call
   sites (`VerdictClassifier`, `LeagueParsingService`), dropping only the `.build()`.

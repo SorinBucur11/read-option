@@ -27,8 +27,8 @@ import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.anthropic.AnthropicChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.ai.model.tool.ToolExecutionResult;
 import org.springframework.ai.support.ToolCallbacks;
@@ -124,9 +124,17 @@ public class DraftAgentService {
                 draftService, draftBoardService, profileScoringService,
                 playerRepository, projectionRepository, draftPickRepository,
                 teamContextService);
-        // No internal-execution opt-out needed in 2.0: a bare ChatModel.call never
-        // executes tools — it returns the tool calls, and WE own the loop.
-        ToolCallingChatOptions options = ToolCallingChatOptions.builder()
+        // 2.0's SDK-backed Anthropic module does NOT merge prompt options with the
+        // configured defaults: a non-AnthropicChatOptions prompt options instance is
+        // DISCARDED wholesale (blank fallback — no tools on the wire), and defaults
+        // apply only when the prompt carries no options at all. ChatClient replicates
+        // the merge itself (defaults.mutate().combineWith(request)); this bare
+        // ChatModel loop must do the same: derive FULL provider-typed options from
+        // the configured defaults (spring.ai.anthropic.chat.* — max-tokens,
+        // temperature), then bind the per-request tool surface. The cast is safe:
+        // this service only exists wired to the Anthropic starter.
+        AnthropicChatOptions options = ((AnthropicChatOptions) chatModel.getOptions())
+                .mutate()
                 .model(properties.model())
                 .toolCallbacks(ToolCallbacks.from(tools))
                 .build();

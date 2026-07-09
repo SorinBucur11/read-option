@@ -23,6 +23,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.ai.anthropic.AnthropicChatOptions;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.InMemoryChatMemoryRepository;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
@@ -103,6 +104,13 @@ class DraftAgentServiceTest {
     }
 
     private void stubSession() {
+        // The service derives prompt options from the model's configured defaults
+        // (2.0 Anthropic module does not merge — prompt options must be full).
+        when(chatModel.getOptions()).thenReturn(AnthropicChatOptions.builder()
+                .model("claude-haiku-4-5")
+                .maxTokens(2000)
+                .temperature(0.3)
+                .build());
         when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(
                 DraftSession.builder()
                         .id(SESSION_ID).leagueConfigId(CONFIG_ID).season(2026)
@@ -228,6 +236,30 @@ class DraftAgentServiceTest {
         assertThat(secondTurn.get(1).getText()).isEqualTo("Who should I pick?");
         assertThat(secondTurn.get(2).getText()).isEqualTo("Take Barkley.");
         assertThat(secondTurn.get(3).getText()).isEqualTo("Are you sure?");
+    }
+
+    @Test
+    @DisplayName("prompt options are FULL provider-typed: defaults carried, model overridden, five tools bound")
+    void promptOptionsAreFullAnthropicOptions() {
+        stubSession();
+        when(chatModel.call(any(Prompt.class))).thenReturn(textResponse("Take Barkley."));
+
+        service(8).advise(SESSION_ID, "Who should I pick?");
+
+        ArgumentCaptor<Prompt> prompts = ArgumentCaptor.forClass(Prompt.class);
+        verify(chatModel).call(prompts.capture());
+        // 2.0's Anthropic module discards any non-AnthropicChatOptions prompt options
+        // wholesale (no merge with defaults) — this pins the regression where the
+        // tools silently never reached the wire.
+        assertThat(prompts.getValue().getOptions()).isInstanceOf(AnthropicChatOptions.class);
+        AnthropicChatOptions options = (AnthropicChatOptions) prompts.getValue().getOptions();
+        assertThat(options.getModel()).isEqualTo("claude-sonnet-4-6");   // per-agent override
+        assertThat(options.getMaxTokens()).isEqualTo(2000);              // carried from defaults
+        assertThat(options.getTemperature()).isEqualTo(0.3);             // carried from defaults
+        assertThat(options.getToolCallbacks())
+                .extracting(cb -> cb.getToolDefinition().name())
+                .containsExactlyInAnyOrder("getDraftState", "getDraftBoard",
+                        "getPlayerProfile", "findPlayer", "getTeamContext");
     }
 
     @Test
