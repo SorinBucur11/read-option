@@ -1,0 +1,53 @@
+{
+  "sessionId": 4,
+  "status": "ACTIVE",
+  "currentOverallPick": 12,
+  "currentTeamSlot": 12,
+  "onTheClock": false,
+  "picksUntilUserNextTurn": 5,
+  "userRoster": [
+    {
+      "playerId": "8138",
+      "name": "James Cook",
+      "position": "RB",
+      "round": 1,
+      "byeWeek": "7"
+    }
+  ],
+  "unfilledSlots": {
+    "QB": 1,
+    "RB": 1,
+    "WR": 2,
+    "TE": 1,
+    "FLEX": 1,
+    "BENCH": 6
+  },
+  "gapTeams": [
+    {
+      "teamSlot": 12,
+      "picksInGap": 2,
+      "positionalCounts": {}
+    },
+    {
+      "teamSlot": 11,
+      "picksInGap": 1,
+      "positionalCounts": {
+        "WR": 1
+      }
+    },
+    {
+      "teamSlot": 10,
+      "picksInGap": 1,
+      "positionalCounts": {
+        "WR": 1
+      }
+    },
+    {
+      "teamSlot": 9,
+      "picksInGap": 1,
+      "positionalCounts": {
+        "WR": 1
+      }
+    }
+  ]
+}

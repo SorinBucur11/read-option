@@ -1,0 +1,47 @@
+{
+  "playerId": "4046",
+  "fullName": "Patrick Mahomes",
+  "position": "QB",
+  "team": "KC",
+  "scoringFormat": "STANDARD_4PT",
+  "history": [
+    {
+      "year": 2021,
+      "totalPoints": 361.66,
+      "pointsPerGame": 21.27,
+      "gamesPlayed": 17
+    },
+    {
+      "year": 2022,
+      "totalPoints": 416.40,
+      "pointsPerGame": 24.49,
+      "gamesPlayed": 17
+    },
+    {
+      "year": 2023,
+      "totalPoints": 280.22,
+      "pointsPerGame": 17.51,
+      "gamesPlayed": 16
+    },
+    {
+      "year": 2024,
+      "totalPoints": 282.02,
+      "pointsPerGame": 17.63,
+      "gamesPlayed": 16
+    },
+    {
+      "year": 2025,
+      "totalPoints": 284.68,
+      "pointsPerGame": 20.33,
+      "gamesPlayed": 14
+    }
+  ],
+  "projection": {
+    "year": 2026,
+    "totalPoints": 278.29,
+    "pointsPerGame": 16.37,
+    "gamesPlayed": 17,
+    "adp": 102.30,
+    "positionalRank": 12
+  }
+}

@@ -1,0 +1,7 @@
+{
+    "type": "https://readoption.app/problems/player-not-found",
+    "title": "Player Not Found",
+    "status": 404,
+    "detail": "No player found with id: NOPE",
+    "instance": "/api/players/NOPE/profile"
+}
