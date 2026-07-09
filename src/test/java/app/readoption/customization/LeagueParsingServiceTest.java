@@ -1,6 +1,6 @@
 package app.readoption.customization;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -46,7 +46,7 @@ class LeagueParsingServiceTest {
         Resource prompt = new ClassPathResource("prompts/league-parser.txt");
         String expected = prompt.getContentAsString(StandardCharsets.UTF_8);
 
-        new LeagueParsingService(builder, properties, new ObjectMapper(), prompt);
+        new LeagueParsingService(builder, properties, new JsonMapper(), prompt);
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
         verify(builder).defaultSystem(captor.capture());
@@ -63,7 +63,7 @@ class LeagueParsingServiceTest {
         Resource blank = new ByteArrayResource("   \n".getBytes(StandardCharsets.UTF_8));
 
         assertThatThrownBy(() ->
-                new LeagueParsingService(builder, properties, new ObjectMapper(), blank))
+                new LeagueParsingService(builder, properties, new JsonMapper(), blank))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("league-parser system prompt is empty");
     }
@@ -74,14 +74,14 @@ class LeagueParsingServiceTest {
         Resource missing = new ClassPathResource("prompts/does-not-exist.txt");
 
         assertThatThrownBy(() ->
-                new LeagueParsingService(builder, properties, new ObjectMapper(), missing))
+                new LeagueParsingService(builder, properties, new JsonMapper(), missing))
                 .isInstanceOf(UncheckedIOException.class);
     }
 
     // ----- convert() seam: structured output is best-effort, never silently defaulted -----
 
     private LeagueParsingService service() {
-        return new LeagueParsingService(builder, properties, new ObjectMapper(),
+        return new LeagueParsingService(builder, properties, new JsonMapper(),
                 new ClassPathResource("prompts/league-parser.txt"));
     }
 

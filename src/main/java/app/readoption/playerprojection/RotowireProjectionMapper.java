@@ -2,8 +2,8 @@ package app.readoption.playerprojection;
 
 import app.readoption.sleeper.SleeperProjection;
 import app.readoption.sleeper.SleeperProjectionData;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -59,7 +59,7 @@ public class RotowireProjectionMapper {
     private String serialize(SleeperProjection projection) {
         try {
             return objectMapper.writeValueAsString(projection);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             return null;   // audit payload only — never fail a row over it
         }
     }

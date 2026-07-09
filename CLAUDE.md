@@ -21,9 +21,11 @@ When in doubt, the number is the engine's job.
 
 ## Stack
 
-Java 17 · Spring Boot 3.5.x · Spring AI 1.1.6 (Anthropic) · PostgreSQL 16 + pgvector
-(Docker, host port **5433** — WSL occupies 5432) · Spring Data JPA · Flyway · Lombok ·
-commons-csv · Maven Wrapper. Model: `claude-sonnet-4-6`.
+Java 21 · Spring Boot 4.0.x · Spring AI 2.0.x (Anthropic, official-SDK-backed) ·
+Jackson 3 (`tools.jackson`; annotations stay `com.fasterxml.jackson.annotation`) ·
+PostgreSQL 16 + pgvector (Docker, host port **5433** — WSL occupies 5432) · Spring Data
+JPA · Flyway · Lombok · commons-csv · Testcontainers 2.x · Maven Wrapper.
+Model: `claude-sonnet-4-6`.
 
 ## Conventions you MUST hold (cross-cutting — the repo is the source of truth)
 

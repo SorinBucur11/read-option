@@ -1,8 +1,10 @@
 package app.readoption.sleeper;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -37,8 +39,11 @@ public class SleeperClient {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
-        this.mapper = new ObjectMapper()
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        // Jackson 3 mappers are immutable — feature flags move to the builder. (This
+        // is also the Jackson 3 default, kept explicit so the intent survives.)
+        this.mapper = JsonMapper.builder()
+                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+                .build();
         this.playersUrl = playersUrl;
         this.statsBaseUrl = statsBaseUrl;
         this.projectionsBaseUrl = projectionsBaseUrl;
@@ -69,6 +74,10 @@ public class SleeperClient {
             log.info("Fetched {} players from Sleeper API", players.size());
             return players;
 
+        } catch (JacksonException e) {
+            // Jackson 3 parse failures are unchecked, no longer IOExceptions —
+            // wrap with the same message the Jackson 2 path produced.
+            throw new RuntimeException("Failed to fetch players from Sleeper API", e);
         } catch (IOException | InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Failed to fetch players from Sleeper API", e);
@@ -101,6 +110,8 @@ public class SleeperClient {
             log.info("Fetched {} player stat lines for season {}", stats.size(), season);
             return stats;
 
+        } catch (JacksonException e) {
+            throw new RuntimeException("Failed to fetch stats from Sleeper API", e);
         } catch (IOException | InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Failed to fetch stats from Sleeper API", e);
@@ -133,6 +144,8 @@ public class SleeperClient {
             log.info("Fetched {} player projections for season {}", projections.size(), season);
             return projections;
 
+        } catch (JacksonException e) {
+            throw new RuntimeException("Failed to fetch projections from Sleeper API", e);
         } catch (IOException | InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Failed to fetch projections from Sleeper API", e);

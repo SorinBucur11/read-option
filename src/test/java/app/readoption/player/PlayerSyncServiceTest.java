@@ -2,8 +2,9 @@ package app.readoption.player;
 
 import app.readoption.sleeper.SleeperClient;
 import app.readoption.sleeper.SleeperPlayer;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -32,8 +33,9 @@ import static org.mockito.Mockito.when;
 class PlayerSyncServiceTest {
 
     /** Same lenient posture as SleeperClient's mapper. */
-    private final ObjectMapper blobMapper = new ObjectMapper()
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+    private final ObjectMapper blobMapper = JsonMapper.builder()
+            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+            .build();
 
     @Mock private SleeperClient sleeperClient;
     @Mock private PlayerRepository playerRepository;

@@ -50,9 +50,10 @@ public class VerdictClassifier {
         String userPrompt = buildUserPrompt(player);
         String response;
         try {
+            // 2.0 ChatClient takes the options BUILDER (it finishes the build itself).
             response = chatClient.prompt()
                     .user(userPrompt)
-                    .options(AnthropicChatOptions.builder().model(model).build())
+                    .options(AnthropicChatOptions.builder().model(model))
                     .call()
                     .content();
         } catch (RuntimeException e) {

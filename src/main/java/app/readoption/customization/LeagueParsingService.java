@@ -1,7 +1,7 @@
 package app.readoption.customization;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.anthropic.AnthropicChatOptions;
@@ -110,9 +110,10 @@ public class LeagueParsingService {
     private String call(String userPrompt, String operation) {
         long start = System.nanoTime();
         try {
+            // 2.0 ChatClient takes the options BUILDER (it finishes the build itself).
             String content = chatClient.prompt()
                     .user(userPrompt)
-                    .options(AnthropicChatOptions.builder().model(model).build())
+                    .options(AnthropicChatOptions.builder().model(model))
                     .call()
                     .content();
             log.info("League {} model call ({}) completed in {} ms",
@@ -128,7 +129,7 @@ public class LeagueParsingService {
     private String toJson(ParsedLeague current) {
         try {
             return objectMapper.writeValueAsString(current);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             // Serializing our own record should never fail; if it does, that's a bug
             // in this codebase, not a model failure — don't dress it as a parse issue.
             throw new IllegalStateException("could not serialize current ParsedLeague", e);

@@ -38,11 +38,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The manual agent loop: {@code ChatModel} + {@code ToolCallingManager} with
- * {@code internalToolExecutionEnabled(false)} — we own the {@code while}, the
- * iteration cap, and the per-round-trip instrumentation that default execution
- * hides (Spring AI 1.1.x API; the 2.0 migration is a named increment, do not
- * "modernize" this to {@code ChatClient} or the 2.0 advisor params).
+ * The manual agent loop: {@code ChatModel} + {@code ToolCallingManager} — we own
+ * the {@code while}, the iteration cap, and the per-round-trip instrumentation
+ * that advisor-driven execution hides. In Spring AI 2.0 ChatModels never execute
+ * tools internally, so external execution needs no opt-out flag; this is the
+ * documented user-controlled {@code DefaultToolCallingManager} loop (advisor
+ * adoption is a deferred design question, do not "modernize" this to
+ * {@code ChatClient} + {@code ToolCallingAdvisor}).
  *
  * <p><b>No transaction here</b> — the loop holds LLM calls; each tool opens its own
  * short read-only transaction inside the 4.1 services (READ → REASON, no txn).
@@ -122,10 +124,11 @@ public class DraftAgentService {
                 draftService, draftBoardService, profileScoringService,
                 playerRepository, projectionRepository, draftPickRepository,
                 teamContextService);
+        // No internal-execution opt-out needed in 2.0: a bare ChatModel.call never
+        // executes tools — it returns the tool calls, and WE own the loop.
         ToolCallingChatOptions options = ToolCallingChatOptions.builder()
                 .model(properties.model())
                 .toolCallbacks(ToolCallbacks.from(tools))
-                .internalToolExecutionEnabled(false)   // WE own the loop (1.1.x API)
                 .build();
 
         String conversationId = String.valueOf(sessionId);

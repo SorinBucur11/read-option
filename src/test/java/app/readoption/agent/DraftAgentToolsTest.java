@@ -13,8 +13,8 @@ import app.readoption.scoring.ScoringRules;
 import app.readoption.team.TeamContextService;
 import app.readoption.valuation.DraftBoardService;
 import app.readoption.valuation.DraftBoardView;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -63,7 +63,7 @@ class DraftAgentToolsTest {
     @Mock private DraftPickRepository draftPickRepository;
     @Mock private TeamContextService teamContextService;
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final JsonMapper objectMapper = new JsonMapper();
 
     private DraftAgentTools tools() {
         return new DraftAgentTools(SESSION_ID, RULES, CURRENT_SEASON, draftService,
@@ -323,8 +323,6 @@ class DraftAgentToolsTest {
 
     private List<String> propertyNames(String inputSchema) throws Exception {
         JsonNode properties = objectMapper.readTree(inputSchema).path("properties");
-        List<String> names = new ArrayList<>();
-        properties.fieldNames().forEachRemaining(names::add);
-        return names;
+        return new ArrayList<>(properties.propertyNames());
     }
 }

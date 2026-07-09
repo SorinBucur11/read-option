@@ -5,7 +5,7 @@ import app.readoption.player.PlayerRepository;
 import app.readoption.sleeper.SleeperClient;
 import app.readoption.sleeper.SleeperProjection;
 import app.readoption.sleeper.SleeperProjectionData;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -40,7 +40,7 @@ class RotowireProjectionSyncServiceTest {
         captured.clear();
         service = new RotowireProjectionSyncService(
                 sleeperClient, playerRepository, rawRepository,
-                new RotowireProjectionMapper(new ObjectMapper()));
+                new RotowireProjectionMapper(new JsonMapper()));
         when(rawRepository.findPlayerIdsByYearAndSource(anyInt(), anyString())).thenReturn(Set.of());
         doAnswer(inv -> {
             @SuppressWarnings("unchecked")
@@ -142,7 +142,7 @@ class RotowireProjectionSyncServiceTest {
 
         String payload = captured.get(0).getSourcePayload();
         assertThat(payload).isNotNull();
-        SleeperProjection roundTripped = new ObjectMapper().readValue(payload, SleeperProjection.class);
+        SleeperProjection roundTripped = new JsonMapper().readValue(payload, SleeperProjection.class);
         assertThat(roundTripped.playerId()).isEqualTo(captured.get(0).getPlayerId());
     }
 }

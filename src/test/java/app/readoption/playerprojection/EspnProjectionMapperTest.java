@@ -2,7 +2,7 @@ package app.readoption.playerprojection;
 
 import app.readoption.espn.EspnPlayersResponse;
 import app.readoption.espn.EspnStatId;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("EspnProjectionMapper — ESPN season projection lands in raw")
 class EspnProjectionMapperTest {
 
-    private final EspnProjectionMapper mapper = new EspnProjectionMapper(new ObjectMapper());
+    private final EspnProjectionMapper mapper = new EspnProjectionMapper(new JsonMapper());
 
     private static EspnPlayersResponse.Player espnPlayer() {
         EspnPlayersResponse.StatEntry season = new EspnPlayersResponse.StatEntry(
