@@ -4,7 +4,7 @@ A running log of what I learn, build, and get confused about while learning AI d
 
 **Goal:** Career evolution into AI + Java backend roles. Build a fantasy football draft assistant as the portfolio project.
 
-**Stack focus:** Java 17, Spring Boot, Spring AI, Anthropic Claude API, PostgreSQL/pgvector, Maven, IntelliJ, Claude Code.
+**Stack focus:** Java 21, Spring Boot 4, Spring AI 2.0, Anthropic Claude API, PostgreSQL/pgvector, Maven, IntelliJ, Claude Code.
 
 ---
 
@@ -4142,3 +4142,299 @@ closed with evidence.
   snapshot, not the file
 - Testcontainers' "could not find a valid Docker environment" = Docker isn't up yet,
   not a test failure
+
+---
+
+## Phase 4.M — The Migration: Java 21 + Spring Boot 4 + Spring AI 2.0 (+ 4.M.1)
+
+### What I did
+
+- **Made the sequencing decision from verified facts, not reflex:** web-checked the
+  version landscape before deciding — Spring AI 2.0.0 GA shipped June 12 2026; Spring
+  Boot 3.5 / Framework 6.2 hit EOL June 30 2026 (the project was on an unpatched
+  baseline); 2.0 reshaped exactly the embedding/VectorStore/pgvector APIs Phase 4.4
+  would be written against. Verdict: migrate BEFORE 4.4, as a named increment (4.M),
+  or write 4.4 twice.
+- **Commit 1 — Java 17 → 21 in isolation**, on Boot 3.5 (a legal intermediate state),
+  so platform and framework never shared a suspect list. 310 green before touching the
+  framework. Fixed the JDK-21 dynamic-agent warning by registering Mockito as an
+  explicit `-javaagent` via Surefire + `dependency:properties` (no hardcoded paths).
+- **Captured behavioral baselines BEFORE migrating:** raw curls of four endpoints
+  (state, board, profile, a 404 ProblemDetail), deterministic psql dumps of two
+  `source_payload` rows (rotowire 10210, espn 10213), and TWO runs of the same agent
+  prompt with full DEBUG loop logs — two runs to measure the LLM's natural variance
+  and set equivalence bands empirically (tokens 10,955 and 13,308 on identical stack).
+- **Wrote the 4.M spec in chat, executed in Claude Code** (commit 8c24c97): parent
+  3.5.14 → 4.0.7, Spring AI 1.1.8 → 2.0.0, Jackson 3 sweep, Boot-4 modularization
+  fallout (starter-webmvc, starter-restclient, starter-flyway, split test-slice
+  starters, Testcontainers BOM 2.0.5), three Spring AI property renames caught by
+  `spring-boot-properties-migrator` (added, used, removed before commit). Findings
+  ledger V-1..V-4 + F-1..F-11, evidence per item. Hibernate 7 rode along with ZERO
+  persistence changes — the integration suite pinned all five exposure points.
+- **Ran the acceptance runbook and caught what 310 green tests couldn't:** the agent
+  was silently broken on the wire. Diagnosed from token forensics, fixed with full
+  provider-typed options (commit 13cff9b), verified at the HTTP body with
+  `ANTHROPIC_LOG=debug`, and pinned with a new schema/options test — 311 green.
+- **4.M.1 — the confabulation fix:** the post-fix acceptance runs surfaced a
+  memory-narrative failure (the model invented events between turns); landed a
+  "State and memory discipline" section in `draft-agent-system.txt` as its own
+  increment, verified by paired before/after transcripts per the 4.3 method.
+
+### What I learned
+
+- **Framework couplings make upgrades atomic by construction.** Spring AI 1.1.x is
+  compiled against Framework 6/Jackson 2; 2.0 against Framework 7/Jackson 3 — there is
+  NO legal state where Boot and Spring AI move separately. A one-line parent bump
+  transitively forces Jackson 3, Framework 7, Hibernate 7, and a reshaped tool API
+  through the codebase in one commit window. That's what makes it a specced increment,
+  not a dependency bump.
+  - **Interview line:** *"I couldn't stage Spring Boot 4 and Spring AI 2.0 separately —
+    each Spring AI line is compiled against one framework generation, so the upgrade is
+    atomic by construction. I isolated what COULD move alone (the JDK, one commit
+    earlier) so that platform and framework changes never shared a suspect list."*
+
+- **Java 17 → 21 is cheap because it's additive; the risk lives in bytecode-touching
+  libraries** (Mockito/ByteBuddy, Hibernate proxies, Lombok) needing the new class-file
+  version — not in application code. The one visible wart: JDK 21 warns on dynamically
+  attached agents (Mockito self-attaches); the clean fix is an explicit `-javaagent`
+  in Surefire, because dynamic attach is slated to become an error.
+  - **Interview line:** *"17 to 21 is low-risk because it's additive — the
+    compatibility risk is bytecode-manipulating libraries supporting the new class-file
+    version. I bumped the JDK as an isolated commit before the framework migration and
+    verified against byte-identical regression anchors."*
+
+- **Two verification regimes, split by determinism class — decided BEFORE migrating.**
+  Deterministic surfaces (endpoints, DB payloads, scoring anchors) get byte-identical
+  diffs against captured baselines. The probabilistic surface (the agent) gets
+  equivalence criteria — same tool SET, iteration cap, token band — derived from TWO
+  pre-migration runs, because without a second run there are no error bars to
+  distinguish sampling noise from regression.
+  - **Interview line:** *"How do you regression-test a system with an LLM in it?
+    Partition by determinism class. Deterministic code gets byte-identical anchors;
+    the LLM path gets equivalence bands measured from repeated baseline runs before
+    the migration — so you can't grade on a curve afterward."*
+
+- **THE incident: 2.0's Anthropic module silently replaces foreign options with a
+  blank.** The module was rewritten on the official `anthropic-java` SDK and no longer
+  merges prompt-level options with configured defaults — and one level deeper than the
+  docs state it: `options instanceof AnthropicChatOptions ? options :
+  AnthropicChatOptions.builder().build()`. My generic `ToolCallingChatOptions` lost
+  the tool schemas, the model override, and max-tokens in one stroke. The model,
+  told about tools in its system prompt but given none in the request, ROLEPLAYED the
+  tool calls as `<function_calls>` text — with invented snake_case names, because it
+  never saw the real schema. Every component behaved correctly given its inputs; the
+  failure was request marshalling.
+  - The diagnostic was **token forensics**: iter-0 input dropped 2,077 → 479, and the
+    ~1,600-token delta matched the size of five tool schemas — proving the loss point
+    was marshalling, not the loop and not the model.
+  - The fix: prompt-level options must be FULL provider-typed or null —
+    `((AnthropicChatOptions) chatModel.getOptions()).mutate().model(...)
+    .toolCallbacks(...).build()`, so property-configured defaults
+    (max-tokens 2000, temperature) survive. ChatClient callers (VerdictClassifier,
+    LeagueParsingService) were unaffected — ChatClient performs its own merge, which
+    is exactly why `options(...)` takes a builder in 2.0.
+  - **Interview line:** *"After a major Spring AI migration, all my tests were green
+    and the agent was silently broken — the SDK-backed Anthropic module replaces a
+    non-provider options object with a blank one, so my tool schemas never reached the
+    API and the model roleplayed the calls as text. Mocked tests structurally cannot
+    catch request-marshalling regressions; my pre-captured behavioral baseline caught
+    it in one curl — input tokens dropped by almost exactly the size of the missing
+    schemas."*
+
+- **Loud-failure asymmetry, validated at framework scale — from the victim's side.**
+  The module had three choices for a foreign options type: merge, THROW, or substitute
+  a blank. It chose the one that degrades toward plausible: a blank options object
+  still yields a valid API call, so nothing failed until behavior was compared against
+  a baseline. A throw would have been a thirty-second stack trace.
+  - **Interview line:** *"The framework degraded toward plausible instead of noisy — a
+    blank options object still produces a valid API request. That incident is why I
+    design my own seams to throw on unrecognized input rather than substitute
+    defaults."*
+
+- **Mocks cover YOUR side of the seam; the wire needs its own eyes.** The new
+  `promptOptionsAreFullAnthropicOptions` test pins that the Prompt carries full
+  provider-typed options with all five callbacks — the closest a mocked test can get.
+  Beyond that point, verification is the HTTP body itself: the official SDK honors
+  `ANTHROPIC_LOG=debug`, and the acceptance run confirmed `"tools"` with five schemas
+  and `"max_tokens": 2000` outbound. Pinning test + behavioral baseline is the
+  complete pair.
+
+- **Jackson 3 in practice:** `com.fasterxml.jackson.{core,databind}` →
+  `tools.jackson.*` but ANNOTATIONS keep the old package (don't "fix" them);
+  `JsonProcessingException` (checked, extends IOException) → `JacksonException`
+  (unchecked) — catch seams stop being compiler-enforced, so parse-failure paths get
+  re-verified by test; mappers are immutable — feature flags move to
+  `JsonMapper.builder()`; bean properties now sort alphabetically by default while
+  creator-bound properties (records) keep declaration order — which is why my views
+  were byte-identical and `ProblemDetail` (getter-based) reordered its keys. Accepted:
+  JSON object member order carries no meaning, and any client parsing by position is
+  already broken.
+  - **Interview line:** *"Jackson 3 made its exceptions unchecked — the ecosystem-wide
+    retreat from checked exceptions in library APIs. The caller usually can't recover
+    from a parse failure at the catch site anyway; the migration cost is that your
+    catch seams stop being compiler-enforced, so I re-verified every parse-failure
+    path by test, not by compiler."*
+
+- **The migration removed a latent concurrency wart:** a parse error used to ride the
+  combined `IOException|InterruptedException` catch and SET THE INTERRUPT FLAG on a
+  bad payload. Jackson 3's unchecked exception forced its own catch; the
+  `InterruptedException` path still restores the flag (load-bearing — catching it
+  clears the status, and swallowing deafens everything above).
+
+- **Baselines are raw bytes.** The board baseline's `6.9` vs the runtime's `6.90` was
+  settled by DEDUCTION, no time machine needed: the new output prints `6.90`, which a
+  double cannot produce, so the field is BigDecimal; valuation/ was untouched, so it
+  was BigDecimal before; Jackson 2 preserves BigDecimal scale (my own profile baseline
+  proved it with `416.40`); therefore the old runtime ALSO emitted `6.90` and the
+  baseline file was zero-stripped by a pretty-printer at capture (Boot emits compact
+  JSON — every pretty baseline file passed through SOME formatter; jq-style tools
+  reparse numbers into doubles and re-emit canonically).
+  - **Interview line:** *"A migration diff disagreed with my baseline file. Instead of
+    trusting either memory, I proved from the artifacts themselves that the old
+    runtime couldn't have emitted the baseline's value — the capture had gone through
+    a number-canonicalizing formatter. Standing rule since: baselines are raw bytes;
+    formatting is for reading, not storing."*
+
+- **Verify against the jars, not the doc, not the chat.** My proposed fix used
+  `getDefaultOptions()` — deprecated forRemoval in 2.0; the executor corrected to
+  `getOptions()` against the actual jar, the same `javap` discipline that verified
+  `internalToolExecutionEnabled` in 4.2. Neither the migration doc nor either side of
+  the chat is the source of truth.
+
+- **The migration silently edited part of my prompt surface.** 2.0 regenerates tool
+  JSON schemas (OpenAPI format hints, required-handling) — iter-0 input shrank ~150
+  tokens on an identical prompt. Tool descriptions are the primary behavioral lever
+  (the 4.3 lesson), so a schema rewrite is a prompt change: the post-fix runs shifted
+  the recommendation from the highest-VORP WR toward the TE-cliff argument — both
+  fully grounded, every number verbatim from the board, a judgment flip near a real
+  decision boundary. n=2 vs n=2 is too small to call it systematic; parked for a
+  distribution tally, not treated as a defect. The invariant that matters held in
+  every run: the model never originated a number.
+  - **Interview line:** *"Behavioral acceptance after a migration has to distinguish
+    BROKEN from SHIFTED. My grounding invariant held — every cited number still traced
+    to tool results — while the judgment shifted, because the framework regenerated my
+    tool schemas and a schema rewrite is a prompt change."*
+
+- **The confabulation (4.M.1's trigger):** on a repeated question, the model inferred
+  a WORLD event from a CONVERSATIONAL event — "you already took McBride based on my
+  prior advice" — and narrated the false premise in the same paragraph as the fresh
+  tool data contradicting it (`iterations: 1` — it HAD current state in hand). Worse
+  than staleness: false narrative DESPITE fetching. This was the 4.3.1 deferred
+  staleness item biting in mutated form; the graduation rule fired on the transcript.
+  - The fix is prompt-level epistemics, one increment, one file: memory holds prior
+    ADVICE, not events; a repeated question means only that the user asked again;
+    roster/picks/availability come exclusively from CURRENT-turn tool results; memory
+    alone may answer questions about the conversation itself (preserving the 4.2
+    zero-tool recall behavior); and reconciliation between expectation and evidence
+    happens SILENTLY — the model may think what it wants about why you asked twice,
+    it may not ship the speculation.
+  - **Interview line:** *"My agent confabulated on repeated questions — it inferred
+    from repetition that real-world events had happened, then narrated the false
+    assumption even though fresh tool data in the same turn contradicted it. The fix
+    was prompt-level epistemics: memory holds prior advice, not events; state
+    questions require current-turn tool results; reconciliation happens silently. I
+    verified it the way I found it — paired before/after transcripts."*
+
+- **Calibrate the criteria, not just the system.** Run new2 also fell below the token
+  band's floor — but the band was measured on FRESH-research turns, and a
+  memory-informed turn that skips re-profiling is behavior 4.2 celebrated. The
+  criterion was wrong, not the agent: fresh-turn band applies to fresh turns; memory
+  turns are judged on grounding alone. (And the 4.M.1 prompt section adds ~200 tokens
+  to iter-0 input — the band moves WITH the prompt; note new baselines instead of
+  reading growth as drift.)
+
+### Phase 4.M — Mistakes & lessons
+
+- **The ledger claimed the maxTokens default jump (500→4096) was "neutralized by our
+  explicit 2000" — false at the agent call site.** The 2000 lives in configured
+  DEFAULTS, and 2.0 ignores defaults whenever prompt-level options are present. A
+  self-consistent claim that was wrong about the mechanism — caught only because the
+  options incident forced the mechanism into the open. Review the diff, not the
+  self-report, includes reviewing the self-report's REASONING.
+- **Three of four baseline files were formatter-processed** (mixed indentation across
+  the set was the tell; one formatter stripped number lexemes). The methodology
+  survived because ENOUGH artifacts were trustworthy to deduce the truth — but
+  capture-time hygiene would have made deduction unnecessary.
+- **My fix proposal was written from the migration doc and used a
+  deprecated-for-removal method.** The doc lags the jar even in the release it
+  documents.
+- **The executor's first fix commit nearly swept my untracked capture files in**
+  because they sat staged; it caught itself and redid the commit. Standing rule out
+  of it, now in CLAUDE.md: the executor commits ONLY files its spec names — explicit
+  paths, never `git add .`, never whatever's staged.
+- **The failing artifacts were nearly overwritten by the re-run.** The 479-token
+  roleplay transcript is F-12's before-picture — preserved under the baseline folder
+  as evidence, because "input tokens dropped by the size of the schemas" is a story
+  worth SHOWING, not just telling.
+
+### Phase 4.M — To revisit / deferred
+
+- **SleeperClient catch-split:** the combined `IOException|InterruptedException` catch
+  still sets the interrupt flag on plain network errors (wrong — nothing interrupted
+  the thread). Three-way split (JacksonException / IOException / InterruptedException)
+  folds into the already-deferred RestClient standardization, where the seam gets
+  redesigned anyway.
+- **Testcontainers BOM pin (2.0.5):** Boot 4 no longer manages TC versions — the pin
+  must be bumped ALONGSIDE future Boot parent bumps, deliberately.
+- **ObjectMapper-supertype injection sites:** work fine (Boot 4's auto-configured
+  JsonMapper satisfies them); ambiguous only if an XmlMapper bean ever appears.
+  Standardization, own commit.
+- **Recommendation-distribution tally:** ASB vs McBride at this board state, five-run
+  sample on the new stack, if the flip starts mattering to trust.
+- **ToolCallingAdvisor vs the manual loop:** 2.0 canonized the manual pattern
+  (user-controlled DefaultToolCallingManager loop, documented for exactly our
+  reason — full control); re-evaluating advisor-based execution + tool interception
+  is a design session, not a migration task.
+- **New fresh-turn token baseline** post-4.M.1 prompt growth: capture on the next
+  acceptance pass.
+
+### Phase 4.M — Concepts Cheat-Sheet (additions)
+
+**Migration methodology (the 4.M set)**
+- Decouple what CAN move alone (JDK) from what can't (Boot+Spring AI) — one variable
+  per commit, one suspect per regression
+- Capture baselines on the OLD stack, raw bytes, deterministic queries, TWO runs of
+  anything probabilistic (variance = error bars)
+- Byte-identical anchors for deterministic code; equivalence bands for LLM behavior —
+  criteria written BEFORE the migration
+- The upgrade notes outrank the spec; the jars outrank the upgrade notes
+- Temporary `spring-boot-properties-migrator`: add, fix, verify zero warnings, REMOVE
+  before commit
+
+**Spring AI 2.0 (the breaking set)**
+- ChatModels never execute tools; `internalToolExecutionEnabled` gone — external
+  execution is the only mode; the manual ChatModel+ToolCallingManager loop is now the
+  documented full-control pattern
+- The Anthropic module is a thin adapter over the official SDK: prompt-level options
+  are used AS-IS — full provider-typed or null; foreign options types are silently
+  replaced with a blank (`instanceof` check), NOT merged, NOT rejected
+- ChatClient merges options itself (`getOptions().mutate()` + combine) — ChatClient
+  callers are insulated; bare ChatModel callers are not
+- `getDefaultOptions()` deprecated forRemoval → `getOptions()`
+- Anthropic maxTokens default 500 → 4096; configured defaults apply ONLY when the
+  prompt carries no options
+- Tool JSON schemas regenerated (OpenAPI hints) — a schema rewrite is a prompt change;
+  expect behavioral shift, judge against the grounding invariant
+- Wire-level eyes: `ANTHROPIC_LOG=debug` on the official SDK logs outbound bodies
+
+**Jackson 3 (the breaking set)**
+- `com.fasterxml.jackson.{core,databind}` → `tools.jackson.*`; annotations KEEP the
+  old package
+- Checked `JsonProcessingException` → unchecked `JacksonException` (no longer an
+  IOException) — catch seams leave the compiler's protection
+- Mappers immutable: `JsonMapper.builder().disable(...).build()`
+- Bean properties sort alphabetically by default; creator/record properties keep
+  declaration order; `FAIL_ON_UNKNOWN_PROPERTIES` off by default (keep it explicit if
+  the leniency is intent)
+- jsonb in Postgres normalizes key order on write — property-order changes are
+  invisible there; value SHAPES are what to diff
+
+**Boot 4 modularization (the pom set)**
+- starter-web → starter-webmvc; RestClient.Builder auto-config moved to
+  starter-restclient; Flyway auto-config moved to starter-flyway; test slices split
+  into starter-webmvc-test / starter-data-jpa-test (annotation packages moved, slice
+  behavior identical)
+- Testcontainers version management dropped — own BOM import, renamed artifacts
+  (testcontainers-junit-jupiter, testcontainers-postgresql)
+- Hibernate 7 / Jakarta Persistence 3.2 ride along — integration tests on the real
+  container are the detector; change nothing preemptively
