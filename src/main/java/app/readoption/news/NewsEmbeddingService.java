@@ -20,11 +20,19 @@ import java.util.UUID;
  * retryable and idempotent. The deterministic UUID
  * ({@code nameUUIDFromBytes(source:newsId:modelTag)}) makes the whole build an
  * anti-join: compute every row's id under the current model tag, skip the ones
- * already stored, embed only the difference. A vendor failure (429/outage) fails
- * the batch loudly and touches nothing upstream — rerun resumes from the anti-join.
+ * already stored, embed only the difference.
+ *
+ * <p>The store is fed in {@link #ADD_BATCH_SIZE}-document chunks, NOT one big
+ * add: {@code PgVectorStore.doAdd} embeds its whole argument before inserting
+ * anything, so a vendor 429 on an un-chunked full corpus discards every paid
+ * embedding and lands zero rows (observed live: the seed corpus is ~3.6M tokens
+ * against OpenAI's 1M tokens/min limit). Chunking makes completed chunks durable
+ * — the anti-join resumes from them — and the bounded per-chunk backoff lets one
+ * invocation pace itself through the rate window. A chunk that still fails after
+ * {@link #MAX_ADD_ATTEMPTS} propagates loudly; everything landed so far stays.
  *
  * <p><b>No transaction here</b>: {@code vectorStore.add} holds the OpenAI
- * embedding call, and its upsert is idempotent by id — a partial batch is
+ * embedding call, and its upsert is idempotent by id — a partial build is
  * repaired by the next run, not by a rollback.
  *
  * <p>Derived-side cleaning: the landing row stays verbatim; the embedded text is
@@ -34,6 +42,15 @@ import java.util.UUID;
 public class NewsEmbeddingService {
 
     private static final Logger log = LoggerFactory.getLogger(NewsEmbeddingService.class);
+
+    static final int ADD_BATCH_SIZE = 500;
+    static final int MAX_ADD_ATTEMPTS = 5;
+
+    /** Doubles per attempt: 5s, 10s, 20s, 40s — sized to a per-minute rate window. */
+    private static final long INITIAL_BACKOFF_MS = 5_000;
+
+    /** Test seam: retry tests must not sleep for real. */
+    long initialBackoffMs = INITIAL_BACKOFF_MS;
 
     private final PlayerNewsRepository newsRepository;
     private final VectorStore vectorStore;
@@ -70,9 +87,12 @@ public class NewsEmbeddingService {
                 .map(entry -> toDocument(entry.getKey(), entry.getValue(), modelTag))
                 .toList();
 
-        if (!toEmbed.isEmpty()) {
-            // The store embeds internally (batched) and upserts by id.
-            vectorStore.add(toEmbed);
+        int chunks = (toEmbed.size() + ADD_BATCH_SIZE - 1) / ADD_BATCH_SIZE;
+        for (int from = 0; from < toEmbed.size(); from += ADD_BATCH_SIZE) {
+            List<Document> chunk = toEmbed.subList(from,
+                    Math.min(from + ADD_BATCH_SIZE, toEmbed.size()));
+            // The store embeds the chunk internally (token-batched) and upserts by id.
+            addWithBackoff(chunk, from / ADD_BATCH_SIZE + 1, chunks);
         }
 
         NewsEmbedReport report = new NewsEmbedReport(
@@ -80,6 +100,41 @@ public class NewsEmbeddingService {
         log.info("News embedding build [{}]: {} candidates, {} embedded, {} already current",
                 modelTag, report.candidates(), report.embedded(), report.alreadyCurrent());
         return report;
+    }
+
+    /**
+     * Provider-agnostic bounded retry: any chunk failure (429 is the expected
+     * one) backs off and retries; a persistent failure (bad key, outage) burns
+     * the attempts and then propagates loudly. Deliberately no provider exception
+     * types here — D2's multi-provider goal keeps this service vendor-blind.
+     */
+    private void addWithBackoff(List<Document> chunk, int chunkNo, int chunks) {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                vectorStore.add(chunk);
+                log.debug("Embedded chunk {}/{} ({} documents)", chunkNo, chunks, chunk.size());
+                return;
+            } catch (RuntimeException e) {
+                if (attempt >= MAX_ADD_ATTEMPTS) {
+                    log.error("Embedding chunk {}/{} failed after {} attempts: {}",
+                            chunkNo, chunks, attempt, e.getMessage());
+                    throw e;
+                }
+                long backoffMs = initialBackoffMs << (attempt - 1);
+                log.warn("Embedding chunk {}/{} attempt {} failed ({}); retrying in {} ms",
+                        chunkNo, chunks, attempt, e.getMessage(), backoffMs);
+                pause(backoffMs);
+            }
+        }
+    }
+
+    private static void pause(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("embedding build interrupted mid-backoff", interrupted);
+        }
     }
 
     /** Deterministic id: same (source, newsId, modelTag) always lands on the same row. */

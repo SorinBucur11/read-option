@@ -11,24 +11,31 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
  * The deterministic UUID (idempotent upsert + coexisting model generations rest
- * on it), the anti-join resume semantics, and the derived-side document
- * construction — headline+cleaned(story) text, dated metadata (A-4).
+ * on it), the anti-join resume semantics, the derived-side document
+ * construction — headline+cleaned(story) text, dated metadata (A-4) — and the
+ * chunked, backoff-bounded feed into the store (the live-observed 429 lesson:
+ * an un-chunked add discards every paid embedding and lands nothing).
  */
 @ExtendWith(MockitoExtension.class)
-@DisplayName("NewsEmbeddingService — deterministic ids, anti-join resume, document construction")
+@DisplayName("NewsEmbeddingService — deterministic ids, anti-join resume, chunked adds, backoff")
 class NewsEmbeddingServiceTest {
 
     private static final String TAG = "text-embedding-3-small";
@@ -38,8 +45,10 @@ class NewsEmbeddingServiceTest {
     @Mock private JdbcTemplate jdbcTemplate;
 
     private NewsEmbeddingService service() {
-        return new NewsEmbeddingService(newsRepository, vectorStore, jdbcTemplate,
-                new NewsProperties(TAG, 5));
+        NewsEmbeddingService service = new NewsEmbeddingService(newsRepository, vectorStore,
+                jdbcTemplate, new NewsProperties(TAG, 5));
+        service.initialBackoffMs = 1;   // retry tests must not sleep for real
+        return service;
     }
 
     private static PlayerNews news(String newsId, String playerId, String headline, String story) {
@@ -129,6 +138,57 @@ class NewsEmbeddingServiceTest {
         ArgumentCaptor<List<Document>> batch = ArgumentCaptor.forClass(List.class);
         verify(vectorStore).add(batch.capture());
         assertThat(batch.getValue().get(0).getText()).isEqualTo("JSN traded");
+    }
+
+    @Test
+    @DisplayName("the store is fed in bounded chunks so a mid-run 429 keeps landed progress")
+    void addsAreChunked() {
+        List<PlayerNews> corpus = new ArrayList<>();
+        for (int i = 0; i < NewsEmbeddingService.ADD_BATCH_SIZE * 2 + 100; i++) {
+            corpus.add(news(String.valueOf(i), "4046", "Headline " + i, "story"));
+        }
+        when(newsRepository.findAll()).thenReturn(corpus);
+        when(jdbcTemplate.queryForList(anyString(), eq(UUID.class))).thenReturn(List.of());
+
+        NewsEmbeddingService.NewsEmbedReport report = service().build();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Document>> chunks = ArgumentCaptor.forClass(List.class);
+        verify(vectorStore, times(3)).add(chunks.capture());
+        assertThat(chunks.getAllValues())
+                .extracting(List::size)
+                .containsExactly(NewsEmbeddingService.ADD_BATCH_SIZE,
+                        NewsEmbeddingService.ADD_BATCH_SIZE, 100);
+        assertThat(report.embedded()).isEqualTo(corpus.size());
+    }
+
+    @Test
+    @DisplayName("a transient chunk failure (the 429 shape) backs off and the build completes")
+    void transientChunkFailureRetries() {
+        when(newsRepository.findAll()).thenReturn(List.of(news("1", "4046", "H", "s")));
+        when(jdbcTemplate.queryForList(anyString(), eq(UUID.class))).thenReturn(List.of());
+        doThrow(new RuntimeException("429: rate limit"))
+                .doNothing()
+                .when(vectorStore).add(anyList());
+
+        NewsEmbeddingService.NewsEmbedReport report = service().build();
+
+        verify(vectorStore, times(2)).add(anyList());
+        assertThat(report.embedded()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a persistent failure burns the bounded attempts, then propagates loudly")
+    void persistentFailurePropagatesAfterBoundedAttempts() {
+        when(newsRepository.findAll()).thenReturn(List.of(news("1", "4046", "H", "s")));
+        when(jdbcTemplate.queryForList(anyString(), eq(UUID.class))).thenReturn(List.of());
+        doThrow(new RuntimeException("401: bad key"))
+                .when(vectorStore).add(anyList());
+
+        assertThatThrownBy(() -> service().build())
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("401");
+        verify(vectorStore, times(NewsEmbeddingService.MAX_ADD_ATTEMPTS)).add(anyList());
     }
 
     @Test
