@@ -4,6 +4,8 @@ import app.readoption.draft.DraftPick;
 import app.readoption.draft.DraftPickRepository;
 import app.readoption.draft.DraftService;
 import app.readoption.draft.DraftStateView;
+import app.readoption.news.PlayerNewsSearchService;
+import app.readoption.news.PlayerNewsView;
 import app.readoption.player.Player;
 import app.readoption.player.PlayerRepository;
 import app.readoption.playerprojection.PlayerProjectionRepository;
@@ -56,6 +58,7 @@ public class DraftAgentTools {
     private final PlayerProjectionRepository projectionRepository;
     private final DraftPickRepository draftPickRepository;
     private final TeamContextService teamContextService;
+    private final PlayerNewsSearchService newsSearchService;
 
     public DraftAgentTools(long sessionId,
                            ScoringRules scoringRules,
@@ -66,7 +69,8 @@ public class DraftAgentTools {
                            PlayerRepository playerRepository,
                            PlayerProjectionRepository projectionRepository,
                            DraftPickRepository draftPickRepository,
-                           TeamContextService teamContextService) {
+                           TeamContextService teamContextService,
+                           PlayerNewsSearchService newsSearchService) {
         this.sessionId = sessionId;
         this.scoringRules = scoringRules;
         this.currentSeason = currentSeason;
@@ -77,6 +81,7 @@ public class DraftAgentTools {
         this.projectionRepository = projectionRepository;
         this.draftPickRepository = draftPickRepository;
         this.teamContextService = teamContextService;
+        this.newsSearchService = newsSearchService;
     }
 
     @Tool(description = "Get the current draft state: overall pick on the clock, which team is "
@@ -239,6 +244,44 @@ public class DraftAgentTools {
 
         return new TeamRoomView(team, filterLabel(normalizedPosition), null,
                 teamRoom.byeWeek(), teamRoom.earlyOpponents(), room);
+    }
+
+    // Tool description text is the primary behavioral lever — spec §8 verbatim.
+    @Tool(description = "Searches ingested news reports about one NFL player (trades, signings, "
+            + "injuries and recovery timelines, coaching and role changes, contracts). playerId "
+            + "is the Sleeper player id from findPlayer or the draft state. query describes what "
+            + "you want to know, e.g. \"trade to new team\" or \"injury recovery status\". "
+            + "Returns up to 5 news items, each with a publication date. News items are "
+            + "point-in-time reports, NOT current facts: ALWAYS state the publication date when "
+            + "citing one (e.g. \"per a March 2 report\"), and treat older items as possibly "
+            + "outdated. If the result is NO_NEWS_FOUND or NEWS_UNAVAILABLE_NO_ESPN_ID, say "
+            + "plainly that you have no news for this player - do not speculate or fill the gap "
+            + "from memory.")
+    public PlayerNewsView searchPlayerNews(
+            @ToolParam(description = "The Sleeper playerId, from findPlayer or the draft state")
+            String playerId,
+            @ToolParam(description = "Free text describing what you want to know, e.g. "
+                    + "\"trade to new team\" or \"injury recovery status\"")
+            String query) {
+        if (playerId == null || playerId.isBlank()) {
+            throw new IllegalArgumentException(
+                    "playerId must not be blank - use findPlayer to resolve a name to a playerId");
+        }
+        if (query == null || query.isBlank()) {
+            throw new IllegalArgumentException(
+                    "query must not be blank - describe what you want to know");
+        }
+        log.debug("tool exec -> searchPlayerNews [session {}] playerId={} query={}",
+                sessionId, playerId, query);
+        long start = System.nanoTime();
+
+        PlayerNewsView view = newsSearchService.searchForPlayer(playerId.trim(), query.trim());
+
+        log.debug("tool exec <- searchPlayerNews [session {}] playerId={} {} | {} ms",
+                sessionId, playerId,
+                view.note() != null ? view.note() : view.items().size() + " items",
+                millisSince(start));
+        return view;
     }
 
     private static String filterLabel(String normalizedPosition) {

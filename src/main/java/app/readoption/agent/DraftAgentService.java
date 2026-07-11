@@ -10,6 +10,7 @@ import app.readoption.draft.DraftSession;
 import app.readoption.draft.DraftSessionNotFoundException;
 import app.readoption.draft.DraftSessionRepository;
 import app.readoption.draft.InvalidDraftRequestException;
+import app.readoption.news.PlayerNewsSearchService;
 import app.readoption.player.PlayerRepository;
 import app.readoption.playerprojection.PlayerProjectionRepository;
 import app.readoption.scoring.ScoringRules;
@@ -70,6 +71,7 @@ public class DraftAgentService {
     private final PlayerProjectionRepository projectionRepository;
     private final DraftPickRepository draftPickRepository;
     private final TeamContextService teamContextService;
+    private final PlayerNewsSearchService newsSearchService;
     private final int currentSeason;
 
     public DraftAgentService(ChatModel chatModel,
@@ -86,6 +88,7 @@ public class DraftAgentService {
                              PlayerProjectionRepository projectionRepository,
                              DraftPickRepository draftPickRepository,
                              TeamContextService teamContextService,
+                             PlayerNewsSearchService newsSearchService,
                              @Value("${readoption.current-season}") int currentSeason) {
         this.chatModel = chatModel;
         this.toolCallingManager = toolCallingManager;
@@ -101,6 +104,7 @@ public class DraftAgentService {
         this.projectionRepository = projectionRepository;
         this.draftPickRepository = draftPickRepository;
         this.teamContextService = teamContextService;
+        this.newsSearchService = newsSearchService;
         this.currentSeason = currentSeason;
     }
 
@@ -123,7 +127,7 @@ public class DraftAgentService {
         DraftAgentTools tools = new DraftAgentTools(sessionId, rules, currentSeason,
                 draftService, draftBoardService, profileScoringService,
                 playerRepository, projectionRepository, draftPickRepository,
-                teamContextService);
+                teamContextService, newsSearchService);
         // 2.0's SDK-backed Anthropic module does NOT merge prompt options with the
         // configured defaults: a non-AnthropicChatOptions prompt options instance is
         // DISCARDED wholesale (blank fallback — no tools on the wire), and defaults

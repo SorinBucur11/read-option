@@ -10,6 +10,7 @@ import app.readoption.draft.DraftSessionNotFoundException;
 import app.readoption.draft.DraftSessionRepository;
 import app.readoption.draft.DraftStatus;
 import app.readoption.draft.InvalidDraftRequestException;
+import app.readoption.news.PlayerNewsSearchService;
 import app.readoption.player.PlayerRepository;
 import app.readoption.playerprojection.PlayerProjectionRepository;
 import app.readoption.scoring.Position;
@@ -81,6 +82,7 @@ class DraftAgentServiceTest {
     @Mock private PlayerProjectionRepository projectionRepository;
     @Mock private DraftPickRepository draftPickRepository;
     @Mock private TeamContextService teamContextService;
+    @Mock private PlayerNewsSearchService newsSearchService;
 
     private ChatMemory memory;
 
@@ -100,7 +102,7 @@ class DraftAgentServiceTest {
                 properties, sessionRepository, leagueConfigRepository,
                 draftService, draftBoardService, profileScoringService,
                 playerRepository, projectionRepository, draftPickRepository,
-                teamContextService, 2026);
+                teamContextService, newsSearchService, 2026);
     }
 
     private void stubSession() {
@@ -239,7 +241,7 @@ class DraftAgentServiceTest {
     }
 
     @Test
-    @DisplayName("prompt options are FULL provider-typed: defaults carried, model overridden, five tools bound")
+    @DisplayName("prompt options are FULL provider-typed: defaults carried, model overridden, six tools bound")
     void promptOptionsAreFullAnthropicOptions() {
         stubSession();
         when(chatModel.call(any(Prompt.class))).thenReturn(textResponse("Take Barkley."));
@@ -259,7 +261,8 @@ class DraftAgentServiceTest {
         assertThat(options.getToolCallbacks())
                 .extracting(cb -> cb.getToolDefinition().name())
                 .containsExactlyInAnyOrder("getDraftState", "getDraftBoard",
-                        "getPlayerProfile", "findPlayer", "getTeamContext");
+                        "getPlayerProfile", "findPlayer", "getTeamContext",
+                        "searchPlayerNews");
     }
 
     @Test

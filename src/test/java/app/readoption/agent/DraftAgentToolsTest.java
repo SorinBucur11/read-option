@@ -5,6 +5,8 @@ import app.readoption.draft.DraftPickRepository;
 import app.readoption.draft.DraftService;
 import app.readoption.draft.DraftStateView;
 import app.readoption.draft.DraftStatus;
+import app.readoption.news.PlayerNewsSearchService;
+import app.readoption.news.PlayerNewsView;
 import app.readoption.player.Player;
 import app.readoption.player.PlayerRepository;
 import app.readoption.playerprojection.PlayerProjectionRepository;
@@ -62,13 +64,15 @@ class DraftAgentToolsTest {
     @Mock private PlayerProjectionRepository projectionRepository;
     @Mock private DraftPickRepository draftPickRepository;
     @Mock private TeamContextService teamContextService;
+    @Mock private PlayerNewsSearchService newsSearchService;
 
     private final JsonMapper objectMapper = new JsonMapper();
 
     private DraftAgentTools tools() {
         return new DraftAgentTools(SESSION_ID, RULES, CURRENT_SEASON, draftService,
                 draftBoardService, profileScoringService, playerRepository,
-                projectionRepository, draftPickRepository, teamContextService);
+                projectionRepository, draftPickRepository, teamContextService,
+                newsSearchService);
     }
 
     @Test
@@ -79,7 +83,7 @@ class DraftAgentToolsTest {
         assertThat(callbacks)
                 .extracting(callback -> callback.getToolDefinition().name())
                 .containsExactlyInAnyOrder("getDraftState", "getDraftBoard", "getPlayerProfile",
-                        "findPlayer", "getTeamContext");
+                        "findPlayer", "getTeamContext", "searchPlayerNews");
 
         for (ToolCallback callback : callbacks) {
             String schema = callback.getToolDefinition().inputSchema();
@@ -92,10 +96,15 @@ class DraftAgentToolsTest {
                 case "findPlayer" -> assertThat(params).containsExactly("name");
                 case "getTeamContext" -> assertThat(params)
                         .containsExactlyInAnyOrder("team", "position");
+                // topK is a server-side property and the session is Java-bound:
+                // neither may ever surface as a schema field.
+                case "searchPlayerNews" -> assertThat(params)
+                        .containsExactlyInAnyOrder("playerId", "query");
                 default -> throw new IllegalStateException("unexpected tool: "
                         + callback.getToolDefinition().name());
             }
-            assertThat(schema).doesNotContain("sessionId").doesNotContain("scoringRules");
+            assertThat(schema).doesNotContain("sessionId").doesNotContain("scoringRules")
+                    .doesNotContain("topK");
         }
     }
 
@@ -310,6 +319,32 @@ class DraftAgentToolsTest {
                 .isThrownBy(() -> tools().getTeamContext("SF", "PUNTER"))
                 .withMessageContaining("PUNTER");
         verifyNoInteractions(teamContextService);
+    }
+
+    // ----- searchPlayerNews (4.4 Commit D) -----
+
+    @Test
+    @DisplayName("searchPlayerNews delegates trimmed args to the news layer")
+    void newsDelegatesTrimmedArgs() {
+        when(newsSearchService.searchForPlayer("4046", "injury recovery status"))
+                .thenReturn(PlayerNewsView.degraded("4046", "NO_NEWS_FOUND"));
+
+        PlayerNewsView view = tools().searchPlayerNews(" 4046 ", " injury recovery status ");
+
+        assertThat(view.note()).isEqualTo("NO_NEWS_FOUND");
+        verify(newsSearchService).searchForPlayer("4046", "injury recovery status");
+    }
+
+    @Test
+    @DisplayName("blank news args throw - surfaced to the model as error tool responses")
+    void blankNewsArgsThrow() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> tools().searchPlayerNews(" ", "query"))
+                .withMessageContaining("playerId");
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> tools().searchPlayerNews("4046", " "))
+                .withMessageContaining("query");
+        verifyNoInteractions(newsSearchService);
     }
 
     private static DraftStateView emptyState() {
