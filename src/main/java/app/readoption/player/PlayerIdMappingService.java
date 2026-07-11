@@ -65,7 +65,7 @@ public class PlayerIdMappingService {
                 String sleeperId = record.get("sleeper_id");
                 String espnId = record.get("espn_id");
 
-                if (isBlank(sleeperId) || isBlank(espnId)) {
+                if (isMissing(sleeperId) || isMissing(espnId)) {
                     continue;                                 // map row missing one side of the join
                 }
                 if (!existingPlayerIds.contains(sleeperId)) {
@@ -88,8 +88,9 @@ public class PlayerIdMappingService {
         return new PlayerIdMappingResult(rowsParsed, matched, updated);
     }
 
-    private static boolean isBlank(String s) {
-        return s == null || s.isBlank();
+    /** DynastyProcess writes the literal string {@code NA} for missing values. */
+    private static boolean isMissing(String s) {
+        return s == null || s.isBlank() || "NA".equals(s);
     }
 
     public record PlayerIdMappingResult(int rowsParsed, int matched, int updated) {}
