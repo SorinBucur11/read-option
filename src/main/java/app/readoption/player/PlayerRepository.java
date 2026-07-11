@@ -39,6 +39,13 @@ public interface PlayerRepository extends JpaRepository<Player, String> {
 
     List<Player> findByActiveTrue();
 
+    /**
+     * The news-sync scope: ESPN-resolvable board positions (QB/RB/WR/TE — K/DST
+     * excluded to match {@code DraftBoardService}). Deliberately wider than the
+     * projected pool: rolled-off news is unrecoverable, so the net errs broad.
+     */
+    List<Player> findByEspnIdIsNotNullAndPositionIn(Collection<String> positions);
+
     List<Player> findByPositionAndActiveTrue(String position);
 
     @Query("SELECT p.id FROM Player p")
