@@ -4438,3 +4438,264 @@ closed with evidence.
   (testcontainers-junit-jupiter, testcontainers-postgresql)
 - Hibernate 7 / Jakarta Persistence 3.2 ride along — integration tests on the real
   container are the detector; change nothing preemptively
+
+---
+
+## Phase 4.4 — Vector News RAG (+ 4.4.1)
+
+### What I did
+
+- Ran a seven-candidate news-source audit against a written rubric (player-ID
+  linkability, structure, category coverage, cadence, backfill, licensing, dedup
+  signal) — raw curl probes captured as bytes BEFORE any design. Selected the
+  ESPN player-news endpoint, `type == "Rotowire"` items only.
+- Ratified three design decisions in chat, each on evidence: **D1** landing/derived
+  split (`player_news` insert-only landing + `news_embedding` rebuildable mart),
+  **D2** OpenAI `text-embedding-3-small` @ 1536 dims as a retryable batch step
+  downstream of ingestion (deterministic fake `EmbeddingModel` at the test seam),
+  **D3** `PgVectorStore` adopted with `initializeSchema=false`, Flyway-owned DDL,
+  startup schema validation ON, dimensions pinned, deterministic document UUIDs.
+- Audited `PgVectorStore` and `PgVectorSchemaValidator` by parsing the class-file
+  constant pools out of the 2.0.0 jar: extracted the DDL template, the upsert and
+  cosine-search SQL, the builder surface, and proved the validator checks column
+  NAMES + vector dimensions (`pg_attribute.atttypmod`) but never column types —
+  which cleared `jsonb` metadata against the store's `json` template.
+- Executed via Claude Code against a four-commit spec (A crosswalk repair +
+  degradation vocabulary, B V15 + ingestion, C V16 + store + embed build, D the
+  sixth tool `searchPlayerNews`); reviewed by diff with an R-1..R-7 findings
+  ledger; seeded ~30k blurbs (2018→now) and embedded the corpus (~$0.07).
+- Shipped 4.4.1 (V17: landing PK widened to the association triple
+  `(source, news_id, player_id)`; embedding UUID gains `playerId`) — then had my
+  own R-1 diagnosis FALSIFIED by the fix's verification gate, and amended the
+  finding in the review doc.
+- Closed acceptance per the frozen §9 criteria: 5/5 starvation probes re-run
+  (4 pass, 1 fail with a named out-of-scope cause), staleness probe passed, and a
+  fresh-turn token baseline captured ×2 — byte-identical (2430/2430; iter-1
+  3532/3532).
+
+### The Phase 4.4 stories (interview-bearing)
+
+**The source audit falsified my models twice — then the review falsified me a
+third time.** Probe 1 (Mahomes, 7 items, oldest May) fit a rolling-window
+retention model; probe 2 (Montgomery, 24 blurbs back to September) killed it;
+the replacement blurb-cap model died the same day (33 blurbs on a fringe
+player). Final characterization: retention is opaque and INVERSELY related to
+coverage volume — stars keep 4–5 blurbs, quiet players keep 10 months. That
+inverted the loss-risk intuition (the first two draft rounds are the fragile
+cohort) and turned sync cadence into a DERIVED number (arrivals must stay under
+the ~4-item worst-case buffer → 2×/week through camp).
+- **Interview line:** *"My first probe fit a clean retention model and my second
+  probe falsified it. Retention turned out to be per-player and opaque, so I
+  stopped modeling the source and designed against the characterization: an
+  append-only corpus that can never be re-derived from the feed. One sample
+  gives you a model; the second tells you whether it was the data's model or
+  yours."*
+
+**The free endpoint was a commercial provider in disguise.** Every player-level
+item carried `type: "Rotowire"` — ESPN syndicates Rotowire's blurbs, pre-chunked
+at 300–700 chars, keyed by an ESPN id I already stored, with a stable numeric
+item id. Three payload facts eliminated the chunking layer, dictated
+accumulate-don't-rederive, and promoted a dormant crosswalk gap to blocking.
+- **Interview line:** *"The audit's key finding wasn't in any documentation — it
+  was in the captured payload: the free endpoint syndicated a commercial
+  provider's content, pre-chunked, with stable IDs and a rolling window. That's
+  why you probe raw responses before designing schemas."*
+
+**Bytecode as the source of truth (jars > docs, applied to a framework store).**
+The store's initializer wanted runtime DDL (plus a `DROP TABLE` flag); the
+builder let me refuse it: `initializeSchema=false`, Flyway-owned DDL, and the
+store's own validator turned from a risk into a startup drift guard — it diffs
+the ACTUAL catalog (`atttypmod`) against configuration and fails loudly with
+both numbers.
+- **Interview line:** *"I didn't trust the docs on whether the schema validator
+  would accept my column type — I read the validator's bytecode and found it
+  checks names and dimensions, never types. Then I turned it into a guard: with
+  dimensions pinned, every startup diffs my migration's real catalog state
+  against configuration."*
+
+**The deterministic UUID is the whole migration story in one function.**
+`nameUUIDFromBytes(source:newsId:playerId:modelTag)` makes the embed build an
+anti-join (idempotent, resumable), makes re-runs free, and makes a model swap a
+coexisting-generations flip — inside a table schema the framework dictates.
+- **Interview line:** *"I made document IDs a deterministic hash of the natural
+  key plus the embedding model. That turned the store's blind upsert into
+  idempotent ingestion and made model migrations a coexisting-generations flip —
+  a re-embed and a config change, never a data loss."*
+
+**The 429 that proved the loud-failure principle at the vendor seam.** The
+first full-corpus embed (~3.6M tokens vs OpenAI's 1M TPM) failed INSIDE
+`PgVectorStore.doAdd`, which embeds its entire argument before inserting
+anything — every paid embedding discarded, zero rows landed. Fix: feed the
+store in 500-doc chunks with bounded exponential backoff; completed chunks are
+durable and the anti-join genuinely resumes. Verified idempotence live:
+immediate rerun = `embedded: 0, alreadyCurrent: 29980`, zero vendor cost.
+- **Interview line:** *"The framework's add() was all-or-nothing across an
+  external billing boundary — a rate-limit at 90% cost me 100%. Chunking moved
+  the atomicity boundary to match the payment boundary: each chunk durable, the
+  deterministic-id anti-join resumes from the gap, and retry pacing rides the
+  provider's rate window."*
+
+**Which model REALLY embedded the corpus — verified from the invoice.** The
+config said 3-small, the dimension validator passed, the metadata tag agreed —
+but the tag is MY property and ada-002 is also 1536-dim, so every green layer
+was compatible with the wrong model underneath (the F-12 shape, one layer up).
+Token volume × observed spend ($0.15 ≈ 7.2M tokens × $0.02/1M over two passes)
+uniquely fit 3-small; ada-002 would have read ~$0.72.
+- **Interview line:** *"I verified which embedding model actually ran from the
+  bill: volume times spend uniquely fit one model's price point. The billing
+  system is a wire-level witness my own configuration can't fake."*
+
+**R-1: the review caught a real anomaly — and then the runbook gate caught the
+reviewer.** The seed reported 180 "duplicates correctly deduped" against an
+EMPTY table; arithmetic said duplicates within the run. Two mechanisms fit
+(same id across players' feeds vs same id re-issued within one feed); I picked
+the scarier one WITHOUT running the discriminating probe, declared association
+loss, and specced 4.4.1 with calendar urgency. The fix's own verification gate
+("expect ≥180 recovered rows") returned ZERO — falsifying my diagnosis. The
+corpus probe then showed ESPN mints DISTINCT ids per delivery, even re-issuing
+the same blurb to the same player: the 180 were within-feed re-issues,
+collapsed correctly, and no association was ever lost. V17's triple PK stays on
+its own merits — the row means "this item appeared in THIS player's feed" — but
+the defect narrative was withdrawn and the review doc amended.
+- **Interview line:** *"My review caught a genuine anomaly in a success report,
+  but two mechanisms fit the arithmetic and I shipped a fix for the scarier one
+  without running the one query that discriminated between them. The fix's own
+  verification gate came back zero and falsified my diagnosis. That's why
+  runbooks carry expected numbers — the gate exists to catch the reviewer too."*
+
+**The spec's file list was wrong and the deviation protocol saved the fix.**
+4.4.1's file list omitted `PlayerNewsRepository` — whose dedup query still
+answered at ITEM granularity; with it unchanged, the PK fix would have silently
+re-dropped the associations it existed to keep (and the naive tests would have
+stayed green). The executor couldn't make the spec compile, deviated, FLAGGED
+the deviation with its reasoning (including rejecting `findAllById` — Spring
+Data degrades to query-per-id on composite keys), and the review commended it.
+- **Interview line:** *"A spec's file list is a guess about blast radius made
+  from chat-side fragments; the executor's deviate-and-flag protocol is what
+  makes the guess safe. The flagged deviation was the fix's real completion —
+  the PK change alone would have been silently insufficient one layer up."*
+
+### Acceptance (the §9 verdicts)
+
+- **5/5 probes judged: 4 pass, 1 fail with a named cause.** The Montgomery and
+  Likely probes now cite dated news for team-change and role context ("per news
+  from January 2026"); the Aiyuk injury-timeline probe was the cleanest exhibit:
+  the model took the injury from the structured profile, composed its own query
+  ("ACL MCL injury recovery timeline return"), cited "per a November 10, 2025
+  report," and said the honest thing about an 8-month-stale corpus — "no clarity
+  on when he'll be ready in 2026." The staleness function working on the hardest
+  shape.
+- **The failing probe (rookie RBs) failed on a MISSING FACT, not a news gap:**
+  every "rookie" cited was a 2025 sophomore, because nothing in the data model
+  says draft class. Grounding held throughout. This is the pre-4.4 `draft_year`
+  gap firing on transcript — promoted from deferred to the next increment by the
+  graduation rule.
+- **4.M.1 discipline held under temptation:** with draft state sitting in
+  memory from two questions earlier, the model re-called `getDraftState` anyway
+  — state from current-turn tools, memory for advice only.
+- **Fresh-turn token baseline: byte-identical across two fresh sessions**
+  (iter-0 in=2430 both; iter-1 in=3532 both — prompt, schemas, AND tool results
+  deterministic end to end). The number sits one schema's weight above the
+  4.M.1-era baseline: the sixth tool, visible as token mass, pointing the
+  healthy direction — the same forensic that diagnosed F-12.
+
+### Phase 4.4 — Mistakes & lessons
+
+- **I diagnosed R-1 without the discriminating probe** — the exact
+  probe-before-designing discipline this phase started with, violated by the
+  reviewer at the moment it mattered. Cost: one migration (kept on merits), a
+  dime of embeddings, a false paragraph in a committed doc, misplaced urgency.
+  Both the executor's mechanism claim and mine were unverified interpretations;
+  the executor's correctness claim was at least RIGHT.
+- **I asserted "one probe is unaccounted for" from a count I never verified** —
+  "the five probes" was my own spec's phrase, not an artifact I possessed; I did
+  subtraction on a list I'd never seen and assigned work defined by the missing
+  item. Resolution came the usual way: against the artifact, not memory.
+- **The token baseline was captured wrong twice** (probes run inside one
+  session; then run-2 sent to run-1's session) — ChatMemory is session-keyed,
+  so iter-0 of anything but a FRESH session measures prompt + accumulated
+  conversation, a different and unstable quantity. Fresh session per run,
+  always.
+- **The executor breached the commit rule twice** (my learning-log edits;
+  its own self-authored review doc) — owner reviewed and WAIVED both, which is
+  the rule working: a deliberate waiver is not a silent breach. The review doc
+  kept its executor-authored header and took owner amendments; a self-report
+  living in the repo must be labeled as one.
+- **`spring.ai.model.chat` / `spring.ai.model.embedding` pins are MANDATORY
+  with two providers on the classpath** — both chat autoconfigs are
+  `matchIfMissing=true`, so without the pins the context builds two ChatModel
+  beans. Found at EV-1, pinned by a contextLoads assertion.
+- **Boot ordering at the seam:** the store bean validates in
+  `afterPropertiesSet`, which Boot does NOT auto-order behind Flyway —
+  `@DependsOnDatabaseInitialization` required, or the drift guard races the
+  migration on cold start.
+- **Test-fake subtlety:** PgVector's cosine search drops rows at distance ≥ 1,
+  so a signed-component fake embedding can fake a NO_NEWS_FOUND — the fake uses
+  strictly positive components. Reading the search SQL's threshold semantics is
+  part of writing the fake.
+
+### Phase 4.4 — To revisit / deferred
+
+- **`draft_year` / rookie classification (PROMOTED — next increment):** one
+  migration + source question first (Sleeper payload vs DynastyProcess CSV),
+  profile view + tool description line. The P1 transcript is the evidence.
+- **Near-duplicate retrieval (the Schwartz shape):** ESPN re-issues the same
+  blurb under fresh ids → near-identical vectors; a fringe player's topK could
+  come back majority-duplicates. Watch item, evidence-pending — no dedup layer
+  until a transcript shows degradation (graduation rule).
+- **Micrometer uri-tag cardinality WARN:** news client interpolates playerId
+  into the URL string → 1,867 distinct `http.client.requests` tags. Fix: URI
+  template + `uriVariables`. Hygiene, own commit.
+- **FantasyPros API key (email pending):** the only backfill lever for the
+  star-player March–April gap; nice-to-have, never a dependency.
+- **Story-item chunking:** graduation-gated; entity linking pre-solved
+  (`data-player-guid` + href ids in ESPN's own markup).
+- **Old-generation embedding cleanup after a model swap:** one manual DELETE by
+  metadata tag; not worth code until a swap happens.
+- **Sync automation:** manual POST 2×/week through camp is sufficient for one
+  draft season; scheduling is a later increment.
+- Camp cadence operational note: sync ~2×/week from late July (retention buffer
+  ≈ 4 items for stars).
+
+### Phase 4.4 — Concepts Cheat-Sheet (additions)
+
+**RAG mechanics (the 4.4 set)**
+- Corpus = the body of text the system retrieves over; ours is append-only
+  because the source can't be re-queried for history
+- The embedding is a COMPUTATION over a fact, parameterized by a model — it
+  lives in a derived table keyed by the model identifier, never on the landing
+  row (vector dimension is DDL; a model swap must never touch source-of-truth)
+- Metadata filter FIRST, similarity SECOND: with a hard `player_id` filter the
+  vector only ranks ~30 candidates — filter design outranks embedding-model
+  quality at this shape
+- Staleness is first-class metadata: `published` must survive landing →
+  document metadata → tool result → the model's sentence ("per a Nov 10, 2025
+  report"); otherwise RAG launders stale truth into confident current-tense
+- Pre-chunked sources (self-contained 300–700-char blurbs) eliminate the
+  chunking layer: one item = one embedding row
+
+**Spring AI 2.0 vector stack**
+- `PgVectorStore` builder: table name, `initializeSchema`,
+  `vectorTableValidationsEnabled`, dimensions, distance type, index type
+  (HNSW default; NONE/IVFFLAT exist), `BatchingStrategy` on the embed call
+- `PgVectorStore.doAdd` embeds its ENTIRE argument before inserting anything —
+  chunk at the caller if the corpus exceeds the provider's TPM window
+- The schema validator checks table existence, column NAMES, and vector
+  dimensions via `pg_attribute.atttypmod` — never column types (jsonb-safe)
+- Two providers on the classpath need `spring.ai.model.chat` /
+  `spring.ai.model.embedding` pins (both chat autoconfigs match-if-missing)
+- OpenAI embedding property (2.0): `spring.ai.openai.embedding.model` (the
+  `.options.model` form is deprecated); Anthropic has NO embeddings API —
+  RAG on this stack always means a second provider or a local model
+- `Document.builder().id().text().metadata()` is the 2.0 construction form
+
+**pgvector**
+- `vector(N)`: the dimension is part of the column TYPE (stored in typmod);
+  the ANN index binds to it — dimensions are schema, written down, not
+  discovered from the model at boot
+- HNSW vs IVFFLAT one-liner: at small corpus size the index is nearly
+  cosmetic (planner may seq-scan); HNSW avoids IVFFLAT's train-before-query
+  requirement and degrades gracefully as the corpus grows
+- Cosine distance operator `<=>`; the store's search thresholds at
+  distance < d — vectors at distance ≥ 1 silently drop (test fakes must keep
+  scores inside the window)

@@ -61,23 +61,25 @@ class NewsEmbeddingServiceTest {
     }
 
     @Test
-    @DisplayName("same (source, newsId, tag) always derives the same UUID")
+    @DisplayName("same (source, newsId, playerId, tag) always derives the same UUID")
     void uuidIsDeterministic() {
-        UUID first = NewsEmbeddingService.embeddingId("espn", "63134328", TAG);
-        UUID second = NewsEmbeddingService.embeddingId("espn", "63134328", TAG);
+        UUID first = NewsEmbeddingService.embeddingId("espn", "63134328", "4046", TAG);
+        UUID second = NewsEmbeddingService.embeddingId("espn", "63134328", "4046", TAG);
 
         assertThat(first).isEqualTo(second);
     }
 
     @Test
-    @DisplayName("a model-tag change derives a DIFFERENT UUID - generations coexist, never collide")
-    void tagChangeChangesUuid() {
-        UUID current = NewsEmbeddingService.embeddingId("espn", "63134328", TAG);
-        UUID swapped = NewsEmbeddingService.embeddingId("espn", "63134328", "text-embedding-3-large");
-        UUID otherSource = NewsEmbeddingService.embeddingId("rotowire", "63134328", TAG);
+    @DisplayName("any key component change derives a DIFFERENT UUID - playerId alone included (R-1)")
+    void anyKeyComponentChangeChangesUuid() {
+        UUID current = NewsEmbeddingService.embeddingId("espn", "63134328", "4046", TAG);
+        UUID swapped = NewsEmbeddingService.embeddingId("espn", "63134328", "4046", "text-embedding-3-large");
+        UUID otherSource = NewsEmbeddingService.embeddingId("rotowire", "63134328", "4046", TAG);
+        UUID otherPlayer = NewsEmbeddingService.embeddingId("espn", "63134328", "9488", TAG);
 
         assertThat(current).isNotEqualTo(swapped);
         assertThat(current).isNotEqualTo(otherSource);
+        assertThat(current).isNotEqualTo(otherPlayer);
     }
 
     @Test
@@ -87,7 +89,7 @@ class NewsEmbeddingServiceTest {
         PlayerNews missing = news("2", "4046", "Mahomes limited", "story B");
         when(newsRepository.findAll()).thenReturn(List.of(already, missing));
         when(jdbcTemplate.queryForList(anyString(), eq(UUID.class)))
-                .thenReturn(List.of(NewsEmbeddingService.embeddingId("espn", "1", TAG)));
+                .thenReturn(List.of(NewsEmbeddingService.embeddingId("espn", "1", "4046", TAG)));
 
         NewsEmbeddingService.NewsEmbedReport report = service().build();
 
@@ -96,7 +98,7 @@ class NewsEmbeddingServiceTest {
         verify(vectorStore).add(batch.capture());
         assertThat(batch.getValue()).hasSize(1);
         assertThat(batch.getValue().get(0).getId())
-                .isEqualTo(NewsEmbeddingService.embeddingId("espn", "2", TAG).toString());
+                .isEqualTo(NewsEmbeddingService.embeddingId("espn", "2", "4046", TAG).toString());
         assertThat(report.candidates()).isEqualTo(2);
         assertThat(report.embedded()).isEqualTo(1);
         assertThat(report.alreadyCurrent()).isEqualTo(1);
@@ -124,6 +126,29 @@ class NewsEmbeddingServiceTest {
                 .containsEntry("published", "2026-06-11T15:08:41Z")
                 .containsEntry("headline", "Mahomes cleared")
                 .containsEntry("embedding_model", TAG);
+    }
+
+    @Test
+    @DisplayName("one item under two players embeds as two documents with two distinct ids (R-1)")
+    void multiPlayerItemEmbedsPerAssociation() {
+        // Same (source, news_id) — a trade blurb landed under both named players.
+        when(newsRepository.findAll()).thenReturn(List.of(
+                news("63200001", "4046", "Blockbuster trade", "story"),
+                news("63200001", "9488", "Blockbuster trade", "story")));
+        when(jdbcTemplate.queryForList(anyString(), eq(UUID.class))).thenReturn(List.of());
+
+        NewsEmbeddingService.NewsEmbedReport report = service().build();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Document>> batch = ArgumentCaptor.forClass(List.class);
+        verify(vectorStore).add(batch.capture());
+        assertThat(batch.getValue()).hasSize(2);
+        assertThat(batch.getValue()).extracting(Document::getId).doesNotHaveDuplicates();
+        assertThat(batch.getValue())
+                .extracting(document -> document.getMetadata().get("player_id"))
+                .containsExactlyInAnyOrder("4046", "9488");
+        assertThat(report.candidates()).isEqualTo(2);
+        assertThat(report.embedded()).isEqualTo(2);
     }
 
     @Test
@@ -197,7 +222,7 @@ class NewsEmbeddingServiceTest {
         PlayerNews row = news("1", "4046", "Mahomes cleared", "story");
         when(newsRepository.findAll()).thenReturn(List.of(row));
         when(jdbcTemplate.queryForList(anyString(), eq(UUID.class)))
-                .thenReturn(List.of(NewsEmbeddingService.embeddingId("espn", "1", TAG)));
+                .thenReturn(List.of(NewsEmbeddingService.embeddingId("espn", "1", "4046", TAG)));
 
         NewsEmbeddingService.NewsEmbedReport report = service().build();
 

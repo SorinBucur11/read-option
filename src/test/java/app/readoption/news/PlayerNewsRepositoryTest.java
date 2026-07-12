@@ -15,14 +15,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase.Replace.NONE;
 
 /**
- * The writer's insert-only dedup against the real V15 schema (also the empirical
+ * The writer's insert-only dedup against the real V17 schema (also the empirical
  * pin that the {@code PlayerNews} entity validates against the TIMESTAMPTZ/JSONB
- * DDL). A re-sync re-delivers the same {@code (source, news_id)} items — zero
- * duplicates may land, and the first-landed row must survive untouched.
+ * DDL). Dedup keys on the full association {@code (source, news_id, player_id)}
+ * — review R-1: a re-sync re-delivering the same associations lands zero
+ * duplicates and the first-landed row survives untouched, but the SAME item in a
+ * SECOND player's feed is a new fact and must land.
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = NONE)
-@DisplayName("player_news persistence — insert-only dedup, re-sync lands zero duplicates")
+@DisplayName("player_news persistence — insert-only dedup per (item, player), re-sync lands zero duplicates")
 class PlayerNewsRepositoryTest extends AbstractPostgresTest {
 
     @Autowired private PlayerNewsRepository newsRepository;
@@ -83,6 +85,38 @@ class PlayerNewsRepositoryTest extends AbstractPostgresTest {
                     assertThat(row.getCreatedAt()).isNotNull();
                     assertThat(row.getPublished()).isEqualTo(Instant.parse("2026-06-11T15:08:41Z"));
                 });
+    }
+
+    @Test
+    @DisplayName("the same item under TWO players inserts TWO rows - the association is the fact (R-1)")
+    void sameItemUnderTwoPlayersLandsBothAssociations() {
+        PlayerNewsWriter writer = writer();
+
+        // The trade blurb arrives in Mahomes' feed first, then in JSN's feed
+        // (same ESPN item id) — under V15's (source, news_id) PK the second
+        // association was silently dropped; under V17 it must land.
+        PlayerNewsWriter.InsertOutcome first = writer.insertNew(List.of(
+                news("400", "4046", "Blockbuster trade")));
+        entityManager.flush();
+        PlayerNewsWriter.InsertOutcome second = writer.insertNew(List.of(
+                news("400", "9488", "Blockbuster trade")));
+        entityManager.flush();
+
+        // Same item, same player, again: on the triple this IS a duplicate.
+        PlayerNewsWriter.InsertOutcome third = writer.insertNew(List.of(
+                news("400", "9488", "Blockbuster trade - EDITED")));
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThat(first.inserted()).isEqualTo(1);
+        assertThat(second.inserted()).isEqualTo(1);
+        assertThat(second.skippedExisting()).isZero();
+        assertThat(third.inserted()).isZero();
+        assertThat(third.skippedExisting()).isEqualTo(1);
+        assertThat(newsRepository.findAll())
+                .filteredOn(row -> row.getNewsId().equals("400"))
+                .extracting(PlayerNews::getPlayerId)
+                .containsExactlyInAnyOrder("4046", "9488");
     }
 
     @Test

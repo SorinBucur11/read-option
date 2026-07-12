@@ -18,9 +18,9 @@ import java.util.UUID;
 /**
  * The derived embedding build: {@code player_news} → {@code news_embedding},
  * retryable and idempotent. The deterministic UUID
- * ({@code nameUUIDFromBytes(source:newsId:modelTag)}) makes the whole build an
- * anti-join: compute every row's id under the current model tag, skip the ones
- * already stored, embed only the difference.
+ * ({@code nameUUIDFromBytes(source:newsId:playerId:modelTag)}) makes the whole
+ * build an anti-join: compute every row's id under the current model tag, skip
+ * the ones already stored, embed only the difference.
  *
  * <p>The store is fed in {@link #ADD_BATCH_SIZE}-document chunks, NOT one big
  * add: {@code PgVectorStore.doAdd} embeds its whole argument before inserting
@@ -73,7 +73,8 @@ public class NewsEmbeddingService {
 
         Map<UUID, PlayerNews> byEmbeddingId = new LinkedHashMap<>();
         for (PlayerNews row : corpus) {
-            byEmbeddingId.put(embeddingId(row.getSource(), row.getNewsId(), modelTag), row);
+            byEmbeddingId.put(
+                    embeddingId(row.getSource(), row.getNewsId(), row.getPlayerId(), modelTag), row);
         }
 
         // One query for what already exists; ids of other model generations can
@@ -137,10 +138,18 @@ public class NewsEmbeddingService {
         }
     }
 
-    /** Deterministic id: same (source, newsId, modelTag) always lands on the same row. */
-    static UUID embeddingId(String source, String newsId, String modelTag) {
+    /**
+     * Deterministic id encoding the FULL association key plus the model
+     * generation: same (source, newsId, playerId, modelTag) always lands on the
+     * same row. {@code playerId} is part of the key (4.4.1, review R-1) because
+     * one item legitimately associates with several players — without it the
+     * second association's vector would upsert over the first and re-destroy
+     * the linkage one layer above the landing table.
+     */
+    static UUID embeddingId(String source, String newsId, String playerId, String modelTag) {
         return UUID.nameUUIDFromBytes(
-                (source + ":" + newsId + ":" + modelTag).getBytes(StandardCharsets.UTF_8));
+                (source + ":" + newsId + ":" + playerId + ":" + modelTag)
+                        .getBytes(StandardCharsets.UTF_8));
     }
 
     private Document toDocument(UUID id, PlayerNews row, String modelTag) {

@@ -25,7 +25,10 @@ import java.time.Instant;
  * (HTML and all; cleaning is a derived-side concern in the embedding build),
  * insert-only, no FK to {@code player} per the landing-table convention.
  * There is deliberately no {@code @PreUpdate}: rows are never updated, so a
- * second sight of the same {@code (source, news_id)} is skipped, never merged.
+ * second sight of the same {@code (source, news_id, player_id)} is skipped,
+ * never merged. The key carries the player association (V17, review R-1): the
+ * observed fact is "this item appeared in THIS player's feed", and one item
+ * legitimately appears in several players' feeds.
  *
  * <p>Timestamps are {@link Instant}s over TIMESTAMPTZ columns — the grounding
  * invariant extends into the time dimension (audit A-4): {@code published} is the
@@ -51,6 +54,7 @@ public class PlayerNews implements Persistable<PlayerNewsId> {
     @Column(name = "news_id")
     private String newsId;
 
+    @Id
     @Column(name = "player_id", nullable = false)
     private String playerId;
 
@@ -87,7 +91,7 @@ public class PlayerNews implements Persistable<PlayerNewsId> {
     @Override
     @JsonIgnore
     public PlayerNewsId getId() {
-        return new PlayerNewsId(source, newsId);
+        return new PlayerNewsId(source, newsId, playerId);
     }
 
     @Override

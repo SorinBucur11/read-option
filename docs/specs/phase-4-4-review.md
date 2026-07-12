@@ -3,6 +3,7 @@
 **Landed 2026-07-11** in five commits (`db5a966` A → `a7424d6` D, plus C-fix
 `fb8508c`). 340 tests green. Spec: `phase-4.4-spec.md`; crosswalk record:
 `phase-4.4-crosswalk-repair.md`.
+Executor-authored; owner review round R-1..R-7 applied.
 
 ## What this phase adds
 
@@ -42,13 +43,13 @@ Three design invariants carried through every layer:
 
 ## New tables
 
-### `player_news` (V15) — the landing table
+### `player_news` (V15, PK widened by V17) — the landing table
 
 | Column | Type | Notes |
 |---|---|---|
 | `source` | TEXT PK₁ | `'espn'` for now |
-| `news_id` | TEXT PK₂ | ESPN item id, verbatim — the dedup key |
-| `player_id` | TEXT | Sleeper id, our canonical key; **no FK** (landing convention) |
+| `news_id` | TEXT PK₂ | ESPN item id, verbatim |
+| `player_id` | TEXT PK₃ | Sleeper id, our canonical key; **no FK** (landing convention). In the PK since V17 (R-1): the observed fact is the item–player *association* |
 | `espn_player_id` | BIGINT | the id the item was fetched under |
 | `headline` | TEXT | |
 | `story` | TEXT | verbatim, HTML and all — cleaning is derived-side |
@@ -58,15 +59,17 @@ Three design invariants carried through every layer:
 | `source_payload` | JSONB | typed item, re-serialized (audit trail) |
 | `created_at` | TIMESTAMPTZ | |
 
-Insert-only: re-syncing the same `(source, news_id)` inserts nothing and never
-updates — first sighting wins. Index `idx_player_news_player (player_id,
+Insert-only: re-syncing the same `(source, news_id, player_id)` inserts nothing
+and never updates — first sighting wins, per (item, player). One item
+legitimately appears in several players' feeds (trades, signings); each
+association is its own row. Index `idx_player_news_player (player_id,
 published DESC)`.
 
 ### `news_embedding` (V16) — the derived vector table
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | UUID PK | **deterministic**: `nameUUIDFromBytes(source:newsId:modelTag)` — idempotent upsert, coexisting model generations |
+| `id` | UUID PK | **deterministic**: `nameUUIDFromBytes(source:newsId:playerId:modelTag)` (playerId since 4.4.1/R-1) — idempotent upsert, coexisting model generations |
 | `content` | TEXT | `headline + "\n" + HTML-stripped story` |
 | `metadata` | JSONB | `player_id, espn_news_id, published, headline, embedding_model` |
 | `embedding` | VECTOR(1536) | HNSW index, cosine ops |
@@ -156,8 +159,13 @@ readoption.news.top-k=5
 
 - Crosswalk repair: 5 of 8 null-`espn_id` draftables repaired, each id verified
   against ESPN's athlete API; 3 unresolvable upstream, degrading loudly.
-- Seed sync: 29,980 items / 1,867 players landed (corpus back to 2018);
-  cross-player duplicate items correctly deduped by the PK existence check.
+- Seed sync: 29,980 items / 1,867 players landed (corpus back to 2018).
+  **Review finding R-1:** the seed's `itemsSkippedExisting: 180` against an
+  empty table was NOT correct dedup — the V15 PK `(source, news_id)` collapsed
+  items appearing in multiple players' feeds to whichever player landed first,
+  silently dropping the other associations. Fixed in Phase 4.4.1
+  (`phase-4-4-1-spec.md`): V17 widens the PK to the association triple; the
+  dropped associations are recovered by re-sync.
 - Full-context boot: exactly one Anthropic `ChatModel` + one OpenAI
   `EmbeddingModel`; `PgVectorStore` validation passed against the live V16 table.
 - Retrieval slice (fake 1536-dim `EmbeddingModel`, real pgvector container):
