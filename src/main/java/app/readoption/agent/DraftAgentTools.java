@@ -128,7 +128,10 @@ public class DraftAgentTools {
             + "explicit 'unconfirmed'/'unavailable' labels when facts are missing - treat those "
             + "as unknown, never guess. Depth positions are raw source labels: LWR/RWR are "
             + "outside receivers, SWR is the slot receiver. All points are scored under THIS "
-            + "league's rules - do not compare against other formats.")
+            + "league's rules - do not compare against other formats. "
+            + "Rookie or experience status comes ONLY from the profile's experience field. "
+            + "Never infer a player's experience level from name recognition, news tone, or "
+            + "conversation memory. If experience reads EXPERIENCE_UNKNOWN, say so.")
     public PlayerProfileView getPlayerProfile(
             @ToolParam(description = "The playerId from the draft board")
             String playerId) {

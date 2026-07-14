@@ -151,7 +151,7 @@ class DraftAgentToolsTest {
     void profileDelegatesWithBoundRules() {
         when(profileScoringService.profile(anyString(), any())).thenReturn(
                 new PlayerProfileView("4866", "Saquon Barkley", "RB", "PHI",
-                        "RB", 1, List.of(), "no injury reported", null, null,
+                        "9th NFL season", "RB", 1, List.of(), "no injury reported", null, null,
                         "9", List.of("W1 vs DAL (home)"), List.of(), null));
 
         tools().getPlayerProfile("4866");

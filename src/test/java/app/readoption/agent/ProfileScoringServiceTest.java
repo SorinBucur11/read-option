@@ -389,6 +389,64 @@ class ProfileScoringServiceTest {
                 .containsExactly(TeamContextService.OPPONENTS_UNAVAILABLE);
     }
 
+    // ----- Phase 4.4.2 experience derivation -----
+
+    @Test
+    @DisplayName("experience derivation: exact contract strings for null / 0 / 1 / 2 / 8")
+    void experienceDerivationContractStrings() {
+        // These strings are the contract the tool description points at — exact,
+        // not shape-matched. Year-of-entry claims ONLY at 0 and 1 (probe-verified
+        // live counter); veterans get an ordinal, never an entry year.
+        assertThat(ProfileScoringService.deriveExperience(null, 2026))
+                .isEqualTo("EXPERIENCE_UNKNOWN — years of experience not available for this player");
+        assertThat(ProfileScoringService.deriveExperience(0, 2026))
+                .isEqualTo("Rookie — first NFL season (2026 class, no NFL production yet)");
+        assertThat(ProfileScoringService.deriveExperience(1, 2026))
+                .isEqualTo("2nd NFL season (entered the NFL in 2025)");
+        assertThat(ProfileScoringService.deriveExperience(2, 2026))
+                .isEqualTo("3rd NFL season");
+        assertThat(ProfileScoringService.deriveExperience(8, 2026))
+                .isEqualTo("9th NFL season");
+        // Season-interpolation pin: the year in the string is the PARAMETER, not a literal.
+        assertThat(ProfileScoringService.deriveExperience(0, 2027))
+                .isEqualTo("Rookie — first NFL season (2027 class, no NFL production yet)");
+        assertThat(ProfileScoringService.deriveExperience(1, 2027))
+                .isEqualTo("2nd NFL season (entered the NFL in 2026)");
+    }
+
+    @Test
+    @DisplayName("ordinal suffix holds across 4th / 11th-13th / 21st shapes")
+    void experienceOrdinalShapes() {
+        assertThat(ProfileScoringService.deriveExperience(3, 2026)).isEqualTo("4th NFL season");
+        assertThat(ProfileScoringService.deriveExperience(10, 2026)).isEqualTo("11th NFL season");
+        assertThat(ProfileScoringService.deriveExperience(11, 2026)).isEqualTo("12th NFL season");
+        assertThat(ProfileScoringService.deriveExperience(12, 2026)).isEqualTo("13th NFL season");
+        assertThat(ProfileScoringService.deriveExperience(20, 2026)).isEqualTo("21st NFL season");
+        assertThat(ProfileScoringService.deriveExperience(21, 2026)).isEqualTo("22nd NFL season");
+    }
+
+    @Test
+    @DisplayName("the profile carries the derived experience label; a null years_exp reads loud")
+    void experienceSurfacesInProfile() {
+        // Wiring pin: the view field comes from deriveExperience over the entity's
+        // years_exp and the configured season, not from anywhere else.
+        Player rookie = contextPlayer("R1", "NO", "RB", 2);
+        rookie.setYearsExp(0);
+        stubProfileScaffolding(rookie);
+        when(playerRepository
+                .findByTeamAndDepthChartPositionAndDepthChartOrderLessThanOrderByDepthChartOrderAsc(
+                        "NO", "RB", 2))
+                .thenReturn(List.of());
+
+        assertThat(service().profile("R1", STANDARD_RULES).experience())
+                .isEqualTo("Rookie — first NFL season (2026 class, no NFL production yet)");
+
+        // The fixture factory never sets years_exp -> null -> loud, never omitted.
+        stubProfileScaffolding(contextPlayer("U1", null, null, null));
+        assertThat(service().profile("U1", STANDARD_RULES).experience())
+                .isEqualTo(ProfileScoringService.EXPERIENCE_UNKNOWN);
+    }
+
     private static PlayerStats statSeason(int year) {
         return PlayerStats.builder()
                 .playerId("4866").year(year).games(17).gamesPlayed(16)

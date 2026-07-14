@@ -45,6 +45,48 @@ public class ProfileScoringService {
     /** Injury label when no {@code injury_status} is reported. */
     static final String NO_INJURY = "no injury reported";
 
+    /** Experience label on a null {@code years_exp} — loud, never silent (D3). */
+    static final String EXPERIENCE_UNKNOWN =
+            "EXPERIENCE_UNKNOWN — years of experience not available for this player";
+
+    /**
+     * The 4.4.2 derivation: Java derives the label, the LLM cites it (D4 — the
+     * model performs no experience arithmetic). {@code years_exp} counts accrued
+     * NFL seasons and freezes for players out of the league, so year-of-entry
+     * claims are made ONLY for 0 and 1 — the values probe-verified against the
+     * live counter (source audit 2026-07-12); veterans get an ordinal only.
+     */
+    static String deriveExperience(Integer yearsExp, int currentSeason) {
+        if (yearsExp == null) {
+            return EXPERIENCE_UNKNOWN;
+        }
+        if (yearsExp == 0) {
+            return "Rookie — first NFL season (" + currentSeason
+                    + " class, no NFL production yet)";
+        }
+        if (yearsExp == 1) {
+            // "entered the NFL in", never "rookie year": 4.4.2-B — the token
+            // "rookie" on a sophomore profile is the categorization attractor,
+            // and it may appear in exactly ONE derivation output: years_exp == 0.
+            return "2nd NFL season (entered the NFL in " + (currentSeason - 1) + ")";
+        }
+        return ordinal(yearsExp + 1) + " NFL season";
+    }
+
+    /** 2nd/3rd/4th/…/11th–13th/…/21st shapes. */
+    private static String ordinal(int n) {
+        int mod100 = n % 100;
+        if (mod100 >= 11 && mod100 <= 13) {
+            return n + "th";
+        }
+        return switch (n % 10) {
+            case 1 -> n + "st";
+            case 2 -> n + "nd";
+            case 3 -> n + "rd";
+            default -> n + "th";
+        };
+    }
+
     /**
      * The F1 rule, single home: {@code injury_status} is the authoritative flag —
      * a null status reads as no injury regardless of lingering attribute fields.
@@ -115,6 +157,7 @@ public class ProfileScoringService {
                 player.getFullName(),
                 player.getPosition(),
                 player.getTeam() != null ? player.getTeam() : TeamContextService.NO_TEAM,
+                deriveExperience(player.getYearsExp(), currentSeason),
                 roleConfirmed ? player.getDepthChartPosition() : ROLE_UNCONFIRMED,
                 roleConfirmed ? player.getDepthChartOrder() : null,
                 depthChartAhead(player),

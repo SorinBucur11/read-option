@@ -4699,3 +4699,237 @@ Data degrades to query-per-id on composite keys), and the review commended it.
 - Cosine distance operator `<=>`; the store's search thresholds at
   distance < d — vectors at distance ≥ 1 silently drop (test fakes must keep
   scores inside the window)
+
+
+---
+
+## Phase 4.4.2 — Rookie / Experience Classification (the vocabulary-as-instruction-surface chapter)
+
+The smallest increment of Phase 4 by diff size — and it produced four acceptance
+runs, one falsified reviewer verdict, one wrong prediction, and the sharpest
+lesson so far about what retrieved text actually IS to a language model.
+
+### What I did
+
+**The source audit shrank the increment to zero migrations.** The plan said
+"one migration for `draft_year`." The audit said otherwise:
+- Built the ground-truth cohort from my own DB first (draftable players with
+  ADP and no prior-season stats) — probe subjects chosen before trusting any
+  source.
+- `player.years_exp` was already landed, entity-mapped, mapper-carried, and
+  Sleeper-sync-owned. Coverage: **0 of 409** draftable players missing.
+  Row owner = column owner, so the JPA merge-null trap never existed here.
+- Live Sleeper capture verified currency: Jadarian Price (2026 class) = 0,
+  Jeanty/Judkins (2025 class) = 1, Barkley = 8, Mahomes = 9. The counter rolls
+  **before mid-July** — correct for the entire draft season.
+- The probe set falsified my assumed semantics via players I didn't care
+  about: Billy Price (rookie_year 2018, years_exp 6), Bobby Price (2020 → 5).
+  **`years_exp` counts ACCRUED NFL seasons and freezes for out-of-league
+  players** — valid as calendar experience only for active players.
+  Consequence encoded in the design: year-of-entry claims only at 0 and 1
+  (probe-verified values); veterans get an ordinal, no entry-year arithmetic.
+- `metadata.rookie_year` exists in the Sleeper payload (the immutable fact)
+  but with spotty coverage — REJECTED; documented as the fallback if a
+  transcript ever falsifies `years_exp` semantics.
+
+**The build (commit A):** `deriveExperience(Integer yearsExp, int currentSeason)`
+— pure static method, exact contract strings, `currentSeason` from the property,
+never hardcoded. `experience` field on `PlayerProfileView` (renders right after
+team; survives NON_NULL serialization unconditionally since the derivation never
+returns null). One grounding line appended to the `getPlayerProfile` tool
+description: experience truth comes ONLY from the profile field — never from
+name recognition, news tone, or memory. Null degrades to `EXPERIENCE_UNKNOWN`
+(loud even at 0/409 missing — a future null must be noisy). Tool surface stays
+at six; no parameter changes.
+
+**The review round (RC-1..RC-7):** six closed on evidence, one open — and the
+open one was the sharp one. The code interpolated the season correctly, but
+**every test passed 2026, the same year a hardcoded implementation would emit**.
+The suite proved the OUTPUT, not the MECHANISM. Fix: two assertions at 2027 —
+the season-interpolation pin. (4.M in miniature: green tests compatible with
+the wrong wire until one test discriminates the mechanism.)
+
+### The four acceptance runs — the real story
+
+**Run 1 (P1 verbatim): FAIL as frozen.** The data defect was dead — the model
+isolated Love as "a true 2026 rookie with no NFL production yet" (the contract
+string, cited near-verbatim) and attributed 2025 production to every sophomore.
+But it headlined Jeanty as "the crown jewel" of the rookies and closed run 2's
+variant with "the best rookie on the board outright." A new defect shape:
+**categorization over correct facts** — it KNEW Jeanty was second-year and
+called him a rookie anyway. I initially graded this "disclosed scope expansion,
+accept with watch item" — grading the model's epistemics when the criterion is
+about the ANSWER. Sorin overruled me, correctly: a user acting on that response
+drafts a sophomore believing he's a rookie. Verdict revised to FAIL; criterion
+rewritten for the real defect; the honest sequence stays in the ledger
+(criteria frozen per attempt, never retrofitted).
+
+**The discriminating probe** ("best TRUE rookies") restricted perfectly —
+Love isolated, sophomores in an explicitly labeled second-year section,
+boundary held to the last line. Capability proven; the defect was DEFAULT
+SCOPING. And the mechanism was ours: **the 4.4.2 sophomore label itself read
+"2nd NFL season (rookie year 2025)" — the token "rookie" sat on every sophomore
+profile.** We built the lexical attractor we were fighting.
+
+**Commit B:** label reworded to "2nd NFL season (entered the NFL in 2025)" —
+the word "Rookie" now appears in exactly ONE derivation output (`years_exp==0`).
+Plus one system-prompt sentence in the 4.M.1 discipline section defining rookie
+strictly. A clause licensing "you may mention second-year players in a labeled
+section" was drafted and **deliberately deleted** (owner call): a rule should
+forbid the defect and stop — a license clause is an invitation to the exact
+scope expansion being fixed, and the disclaimer-decay observation (run 1's
+disclaimer eroded by its own summary paragraph) showed why licensed-if-labeled
+is fragile.
+
+**Run 2: PASS as frozen** — sophomores never called rookies — but they arrived
+with full profiles and recommendations, uninvited. Product decision (not a
+retro-fail): a rookie question gets rookies. One more prompt sentence ("answer
+with rookies only — do not volunteer second-year players or veterans"), edited
+owner-side in IntelliJ (blast radius of one file — routing rule applied).
+
+**Run 3: PASS.** Sophomores named exactly once, TO BE DISQUALIFIED ("are
+actually in their second NFL season and do not qualify") — zero numbers, zero
+value presented. Love owns the rookie designation with verbatim mart numbers
+(228.88 / 73.47 / 20.50). Criterion wording refined to intent: *sophomores may
+be named only to disqualify them, never presented with value.* Defect arc:
+knew nothing → knew but miscategorized → categorized but padded → answers the
+question.
+
+### The conceptual close — where do the non-rookies come from?
+
+The question that unlocked the mental model: post-fix, WHY does the model still
+mention players it was scoped away from? Because **the prompt governs
+composition, not retrieval.** The board rows carry no experience field; the
+filtering fact lives one lookup deep, in the profile. So the model must
+retrieve the non-answers to find the answer — it cannot know Jeanty doesn't
+qualify without pulling the profile that says so. Six sophomore profiles enter
+the context window as a structural necessity, and everything in context is
+candidate material at composition time. In Oracle terms: **the predicate can't
+be pushed down to the scan**, so the plan is fetch-broadly, filter-in-app — and
+in an LLM, unlike a WHERE clause, rejected rows don't vanish; they sit in
+working memory exerting pressure to be used. The prompt-level fix polices the
+symptom at composition; the architectural fix (experience flag on the board
+rows, or a board filter parameter) would remove the cause by making rejection
+happen BEFORE retrieval. Graduation-gated: run 3's mention is arguably good UX,
+so the architectural lever is ledgered, not built.
+
+### Interview-ready talking points
+
+- *"The failure looked like a missing fact, but the audit showed the fact was
+  landed all along — fully covered, sync-owned, current. What was missing was
+  exposure: no retrieval surface offered it, so the model filled the gap from
+  name recognition. The fix was zero migrations."*
+- *"The probe set included players I didn't care about, and they falsified my
+  assumed semantics: the experience counter freezes for players out of the
+  league. You learn a field's real semantics from the rows that break your
+  model, not the rows that fit it."*
+- *"Hibernate's schema validation is one-directional: every mapped attribute
+  needs a column, but an orphaned database column passes silently. Validation
+  tells you your entities fit the schema — never that the schema is fully
+  owned."*
+- *"The implementation interpolated the season correctly, but every test passed
+  the same year a lazy implementation would hardcode — the suite proved the
+  output, not the mechanism. One assertion at a different year pins the
+  mechanism forever."*
+- *"My retrieval fix passed its tests and failed acceptance because the label I
+  designed contained the word 'rookie' on non-rookies — the model treated my
+  own vocabulary as license to miscategorize. In a RAG system, retrieved text
+  is instruction surface. You debug the corpus's vocabulary before you debug
+  the prompt."*
+- *"I keep the prompt narrower than the acceptance criterion. The prompt
+  forbids exactly the defect — every extra clause is reinterpretation surface,
+  and the clause I almost shipped licensed the very expansion I was fixing.
+  The criterion tolerates adjacent harmless behavior — acceptance should fail
+  on the defect, not on style."*
+- *"My prompt rule fixed the model's categories and I predicted its vocabulary
+  would follow. It didn't — 'true rookie' survived three runs. Prompts move
+  what the model asserts; they barely move how it talks. Knowing which layer a
+  behavior lives in tells you whether a prompt line will work."*
+- *"The model kept mentioning players I'd scoped out, and the reason was
+  architectural: the filter column lived one lookup deep, so the model had to
+  retrieve the non-answers to find the answer — and everything retrieved
+  becomes candidate material. Prompts govern composition, not retrieval; the
+  architectural fix is predicate pushdown — put the filter fact on the surface
+  being scanned."*
+
+### Mistakes & lessons
+
+- **I graded run 1 wrong** — "disclosed scope expansion, accept" judged the
+  model's epistemics when the criterion judges the answer a user acts on.
+  The owner's reading was correct; verdict revised to FAIL. The reviewer's
+  framing is not above the frozen criterion.
+- **My own probe leaked vocabulary**: "true rookies" was probe scaffolding that
+  then infected the framing — the qualifier concedes a second kind of rookie
+  exists. Vocabulary discipline binds the tester too: one unqualified term per
+  category, in labels, prompts, AND test questions.
+- **Wrong prediction, recorded:** I predicted the "true rookie" hedge would
+  disappear once scope tightened. 3/3 runs kept it. Discourse priors on
+  phrasing survive scope rules that never mention phrasing. No action — a
+  prompt line policing style with no demonstrated harm fails the graduation
+  rule.
+- **Probe-0 returned zero rows from a query artifact** (my `ps.season` vs the
+  table's `ps.year`) — resolved by discriminating evidence, not re-diagnosis:
+  the rookie WAS on the board, the stats belonged to six veteran Prices.
+- **The javadoc debugging reflex:** when hunting a model behavior, first ask
+  "does the model ever see this string?" Model-visible surfaces are exactly
+  three — system prompt, tool descriptions/schemas, tool result VALUES.
+  Javadoc and comments never cross the wire; half the suspects disqualify
+  immediately.
+
+### To revisit / watch items
+
+- **Counter roll timing:** re-verify `years_exp` for the 2027 class next
+  offseason before trusting `== 0` (characterized from one cycle: "rolls
+  before mid-July").
+- **Ungrounded-breadth family — 2 specimens, graduation at recurrence:**
+  (1) "with Caleb Williams" — a current-tense roster fact from model memory,
+  no tool source, no date; (2) "the board's top 50 shows only one true rookie
+  by experience" — a universal claim verified only to the breadth of profiles
+  actually called. Both presumably TRUE — the plausible-degradation shape.
+  A third specimen in acceptance transcripts graduates a roster/breadth
+  grounding line (the 4.M.1 shape).
+- **"True rookie" hedge:** cosmetic, 3/3 runs, categorization correct under
+  it. Recorded, no action.
+- **Prose rounding of mart numbers:** 228.88 → "229" (run 1) and "228"
+  (run 2), verbatim in run 3. Direction unstable; source grounding held.
+  Noted, no action.
+- **Predicate-pushdown option:** experience flag on board rows or a
+  `getDraftBoard` filter — removes sophomore retrieval (and six profile calls)
+  from rookie questions. Built only on transcript evidence of harm.
+- **OPEN at closure — owner-accepted:** (1) fresh-turn token baseline ×2 not
+  yet recaptured; the prompt moved three times this phase (description line +
+  two system-prompt sentences) so **the 2430 baseline is STALE** — capture
+  before the next migration at the latest, instrument question verbatim,
+  fresh session per run; (2) loop-log profile-call count for the top-50 claim
+  (expected ~7) — one grep, closes the breadth-specimen with evidence.
+
+### Concepts Cheat-Sheet (additions)
+
+**Model-visible surfaces (the debugging triage)**
+- Exactly three: system prompt, tool descriptions + schemas, tool result
+  VALUES. Javadoc, comments, entity names, test code — never cross the wire.
+
+**Retrieval vs composition**
+- Prompts govern composition, not retrieval; retrieval is necessarily broader
+  than the answer when the filtering fact lives a lookup deep.
+- Rejected candidates don't vanish from an LLM's context the way rejected rows
+  vanish from a result set — they remain candidate material with salience.
+- The architectural fix is predicate pushdown: move the filter fact onto the
+  scanned surface so rejection precedes retrieval.
+
+**Vocabulary as instruction surface**
+- A retrieved label is an instruction: a "rookie"-token on a sophomore profile
+  licenses miscategorization regardless of prompt rules fighting it.
+- One unqualified term per category, everywhere — labels, prompts, prose,
+  and the test questions themselves.
+- Minimal prohibition beats choreographed permission: forbid the defect,
+  don't license the adjacent behavior (license clauses are scope-expansion
+  invitations; disclaimers decay over response length).
+
+**Acceptance discipline**
+- The prompt is narrower than the criterion; the criterion is narrower than
+  the model's freedom. Prompt = what we tell it; criterion = what we accept.
+- Criteria are frozen per attempt; a FAIL verdict with a rewritten criterion
+  for the NEXT run is the honest record — and the reviewer's framing is not
+  above the frozen criterion either.
+- Prompts move categories, not vocabulary habits — predict accordingly.

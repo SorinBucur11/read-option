@@ -18,6 +18,10 @@ import java.util.List;
  * guessed value (vocabulary in {@link app.readoption.team.TeamContextService}):
  * <ul>
  *   <li>{@code team} — abbrev, or "free agent / no team".</li>
+ *   <li>{@code experience} — Java-derived label from {@code years_exp} (Phase
+ *       4.4.2): rookie/2nd-season wording only where the live counter was
+ *       probe-verified, ordinal for veterans, {@code EXPERIENCE_UNKNOWN} on
+ *       null. The model cites it, never computes it.</li>
  *   <li>{@code depthChartPosition} — the source's RAW sub-position ({@code SWR}
  *       stays {@code SWR}), or "role unconfirmed".</li>
  *   <li>{@code depthChartOrder} — null when the role is unconfirmed.</li>
@@ -43,6 +47,7 @@ public record PlayerProfileView(
         String name,
         String position,
         String team,
+        String experience,
         String depthChartPosition,
         Integer depthChartOrder,
         List<String> depthChartAhead,
