@@ -3,8 +3,8 @@
 AI-powered NFL fantasy football draft assistant. Read Option aggregates player
 projections from multiple providers, reconciles their disagreements into a
 consensus, scores them under any league's rules, ranks players against both
-their own projected value and the draft market, and (in later phases) reasons
-over that data with an LLM to recommend picks during a live draft.
+their own projected value and the draft market, and reasons over that data with
+an LLM agent to recommend picks during a live draft.
 
 **Tagline:** *Read the data. Make the call.*
 
@@ -17,9 +17,9 @@ consumed from established providers rather than reinvented. A deterministic Java
 engine converts those projections into fantasy points under any scoring format,
 ranks them, and decides every number. The LLM's job is the part that actually
 needs judgment — classifying *which* provider to trust when they disagree, and
-(in later phases) strategic draft reasoning over numbers the engine already
-computed. The LLM never produces a stat or a point; it classifies, and the
-engine applies the verdict.
+strategic draft reasoning over numbers the engine already computed. The LLM
+never produces a stat or a point: it classifies and strategizes, and every
+number it quotes is a verbatim engine or tool result.
 
 ## Status
 
@@ -35,7 +35,7 @@ injecting prior-season actuals moved the model from 94% abstention to a
 discriminating distribution with reasoning auditable down to the retrieved fact
 that moved each verdict.
 
-**Phase 3 — Natural-language league customization: built.** A user describes
+**Phase 3 — Natural-language league customization: complete.** A user describes
 their league and draft style in plain English; an LLM parses it into a
 validated spec (`parse → refine → confirm`); a deterministic resolver turns the
 spec into the engine's scoring config; confirm persists it. The LLM translates
@@ -45,8 +45,23 @@ types give the model no field to write a number into. Full walkthrough, class
 map, and copy-pasteable curl examples:
 **[docs/phase-3-overview.md](docs/phase-3-overview.md)**.
 
-Next up: **Phase 4 — AI draft assistant** (agent with tool calling, real-time
-recommendations, consuming the captured league config).
+**Phase 4 — AI draft assistant: complete.** The architectural inversion from
+pre-injection RAG to **agentic tool calling**: the model decides mid-reasoning
+what it needs and requests it against schemas the Java code publishes — and it
+still never originates a number. A persisted draft domain (sessions, an
+insert-only pick ledger, snake-order arithmetic) and a deterministic
+**VORP/replacement-level engine** turn the confirmed league's roster shape into
+a scarcity-adjusted draft board; a hand-owned agent loop (`ChatModel` +
+`ToolCallingManager`, loud iteration cap, per-round-trip token/latency
+instrumentation) exposes **six session-bound read-only tools** — draft state,
+VORP board, player profile, name→id lookup, team/depth-chart room, and vector
+news search over an embedded ESPN news corpus (pgvector + OpenAI embeddings).
+Built starve-then-retrieve: each tool graduated only after a failure transcript
+demonstrated the need. Mid-phase the platform migrated to Java 21 / Spring Boot
+4 / Spring AI 2.0. Full walkthrough, concepts, tables, and run examples:
+**[docs/phase-4-overview.md](docs/phase-4-overview.md)**.
+
+Next up: **Phase 5 — in-season management** (weekly updates, lineup decisions).
 
 ## What it does today
 
@@ -84,6 +99,28 @@ recommendations, consuming the captured league config).
   (`parse → refine → confirm`) surfaces blocking issues and drift, and a
   deterministic resolver produces the persisted league config — see
   [docs/phase-3-overview.md](docs/phase-3-overview.md).
+- **Values** every draftable player against the confirmed league's roster shape:
+  a deterministic **VORP engine** (greedy flex/superflex absorption →
+  per-position replacement levels → `points − replacement`) scores the
+  consensus mart in memory under the league's resolved rules and serves a
+  VORP-ranked board with the format-matched ADP alongside.
+- **Tracks** live drafts: sessions snapshot `teamCount`/`totalRounds` from the
+  config at creation, every pick (yours and opponents') lands in an insert-only
+  ledger with server-assigned pick numbers, and snake-order team assignment is
+  derived arithmetic, never stored.
+- **Advises** on the clock: a conversational agent (`POST /advise`) runs a
+  manual tool-calling loop over six session-bound read-only tools — draft
+  state, VORP board, player profile (history + projection + role/injury/bye/
+  experience), name→id lookup, team depth-chart room, and dated news search.
+  Session and scoring rules are constructor-bound fields, so the generated tool
+  schemas give the model no parameter to reach another session or format —
+  proven by a test that parses the schemas.
+- **Retrieves** the *why* behind the numbers: ESPN Rotowire news lands verbatim
+  in a permanent landing table, a derived pgvector table holds OpenAI
+  embeddings (deterministic ids, generation-tagged, rebuildable), and the
+  agent's `searchPlayerNews` tool returns dated items filtered to one player —
+  citations state the publication date; a missing corpus degrades to a loud
+  label, never speculation.
 
 ## Reconciliation in one paragraph
 
@@ -100,26 +137,37 @@ path), phased so no database transaction is ever held across a model call.
 
 ## Stack
 
-- Java 17
-- Spring Boot 3.5.14
-- **Spring AI 1.1.6 (Anthropic Claude)** — structured-output verdict
-  classification (Phase 2) and league-description parsing (Phase 3)
-- PostgreSQL 16 + pgvector (Docker)
+- Java 21
+- Spring Boot 4.0.x
+- **Spring AI 2.0.x** — Anthropic (official-SDK-backed) for verdict
+  classification (Phase 2), league parsing (Phase 3), and the draft agent's
+  tool-calling loop (Phase 4); OpenAI `text-embedding-3-small` +
+  `PgVectorStore` for the news RAG (Phase 4.4)
+- Jackson 3 (`tools.jackson`; annotations stay `com.fasterxml.jackson.annotation`)
+- PostgreSQL 16 + pgvector (Docker) — the vector extension does real work
+  since Phase 4.4 (`news_embedding`, HNSW cosine index)
 - Spring Data JPA + Hibernate
 - Flyway (versioned schema migration)
-- Sleeper API (rotowire projections, stats, players, ADP) and the ESPN fantasy
-  API (projections via an `X-Fantasy-Filter` header)
+- Sleeper API (rotowire projections, stats, players, ADP) and the ESPN APIs —
+  fantasy (projections via an `X-Fantasy-Filter` header), site (schedules),
+  and player news
 - DynastyProcess `db_playerids` crosswalk (bundled snapshot) for ESPN id resolution
 - commons-csv, spring-boot-starter-validation
+- Testcontainers 2.x (`pgvector/pgvector:pg16`) for repository slices
 - Maven (via Maven Wrapper)
 - Lombok
 
 ## Required environment variables
 
-- `ANTHROPIC_API_KEY` — required for the reconciliation verdict step (Phase 2+)
-  and for league parsing (`/api/league/parse` and `/refine` make a live model
-  call; `/confirm` does not). The dry-run calibration mode does not need it;
-  the real reconcile run does. Get one at https://console.anthropic.com
+- `ANTHROPIC_API_KEY` — required for the reconciliation verdict step (Phase 2+),
+  for league parsing (`/api/league/parse` and `/refine` make a live model
+  call; `/confirm` does not), and for draft advice
+  (`/api/draft/sessions/{id}/advise`). The dry-run calibration mode does not
+  need it; the real reconcile run does. Get one at https://console.anthropic.com
+- `SPRING_AI_OPENAI_API_KEY` — required since Phase 4.4: the OpenAI embedding
+  model bean is constructed eagerly, so **the app does not boot without it**.
+  It is spent only by `/api/news/embed` (and by query embedding inside the
+  agent's news search).
 
 ## Running
 
@@ -171,6 +219,21 @@ curl -X POST "http://localhost:8080/api/projections/reconcile/2026?dryRun=true"
 curl -X POST "http://localhost:8080/api/projections/reconcile/2026"
 ```
 
+Then the Phase 4 context loads (schedule/byes, news corpus, embeddings):
+
+```bash
+# NFL schedule + derived bye weeks (ESPN site API, WSH->WAS crosswalk)
+curl -X POST http://localhost:8080/api/teams/schedule/sync
+
+# ESPN Rotowire news into the permanent landing table (several minutes;
+# idempotent; re-run ~2x/week through camp — rolled-off items are unrecoverable)
+curl -X POST http://localhost:8080/api/news/sync
+
+# Embed the corpus into pgvector (OpenAI; idempotent anti-join, chunked with
+# backoff — safe to re-run after a vendor outage, it continues from the gap)
+curl -X POST http://localhost:8080/api/news/embed
+```
+
 ## API
 
 ```
@@ -205,6 +268,39 @@ POST /api/league/confirm    { current }
         the parsed spec + validation issues + READY/NEEDS_INPUT; confirm is the
         only writer (409 + issues while anything BLOCKING remains). Request/
         response shapes and worked examples: docs/phase-3-overview.md.
+
+POST /api/draft/sessions                  { leagueConfigId, userSlot }
+        Start a draft session against a confirmed league config. teamCount and
+        totalRounds are snapshotted from the config, never request fields.
+
+POST /api/draft/sessions/{id}/picks       { playerId }
+        Record a pick (yours or an opponent's). Server-assigned pick number;
+        round/team derived by snake arithmetic; 409 on a duplicate player.
+
+GET  /api/draft/sessions/{id}/state
+        Live draft state: current pick/team, your roster (with byes), unfilled
+        slots, picks until your next turn, opponents' positional counts in
+        the gap.
+
+GET  /api/draft/sessions/{id}/board?position=RB&limit=20
+        VORP-ranked board of available players under this league's rules, with
+        per-position replacement levels and format-matched ADP.
+
+POST /api/draft/sessions/{id}/advise      { message }
+        One conversational turn with the draft agent (live model call, up to 8
+        tool iterations). Returns { advice, iterations, totalTokens,
+        latencyMs }. Session-scoped memory recalls prior turns.
+
+POST /api/teams/schedule/sync?season=2026
+        ESPN schedule into team_schedule + derived bye weeks (delete-and-reload
+        per team, loud bye derivation).
+
+POST /api/news/sync
+POST /api/news/embed
+        News RAG ingestion (Phase 4.4): sync lands ESPN Rotowire items verbatim
+        (insert-only, permanent); embed builds the derived pgvector table via
+        an idempotent anti-join. Deliberately separate — ingestion never waits
+        on a vendor. Full walkthrough: docs/phase-4-overview.md.
 ```
 
 All error responses follow **RFC 9457** (`application/problem+json`): a
@@ -228,12 +324,21 @@ Schema is managed by Flyway migrations in `src/main/resources/db/migration`:
 | V8 | `player_projections` | Stat columns `INTEGER → NUMERIC(7,2)` — the mart receives a real fractional source line or a median; integer columns would re-truncate |
 | V9 | `player_projection_reconciliation` | Per-player audit row (cv, route, verdict, confidence, rationale, model), **no FK** |
 | V10 | `league_config` | Confirmed league config: **resolved** scoring as typed `NUMERIC(4,2)` columns, roster columns, nullable playoff columns, `tactics JSONB`, **no FK** (no user table yet); written only by `/api/league/confirm` |
+| V11 | ADP columns | Per-format ADP: raw table swaps single `adp`/`adp_format` for `adp_std`/`adp_half_ppr`/`adp_ppr` `NUMERIC(6,2)`; mart columns widened to match. ADP copied verbatim rotowire raw → mart, never derived |
+| V12 | `draft_session` + `draft_pick` | Sessions (IDENTITY, frozen `team_count`/`total_rounds` snapshots) and the insert-only pick ledger: composite PK `(session_id, overall_pick_no)`, **real FKs** to session and player, `UNIQUE (session_id, player_id)`; no `team_no` column — snake assignment is derived |
+| V13 | `nfl_team` + `team_schedule` + `player` | Teams (Sleeper abbrev PK, `espn_abbrev` crosswalk, derived `bye_week`), schedule (PK `(team, season, week)`, no FK — landing), five raw-vocabulary depth-chart/injury columns on `player` |
+| V14 | `nfl_team` seed | 32 teams, no stale OAK, WAS/WSH the single crosswalk row (DDL/DML split deliberate) |
+| V15 | `player_news` | News landing: insert-only, verbatim, permanent (source retention is opaque — this is the only durable record); `published TIMESTAMPTZ` is the citation fact; `source_payload JSONB`; **no FK** |
+| V16 | `news_embedding` | The pgvector table (+ `CREATE EXTENSION vector`): deterministic UUID id, `content`, `metadata JSONB`, `embedding VECTOR(1536)`, HNSW cosine index. Owned by Spring AI's `PgVectorStore` (no JPA entity); the bean boots with validation on, so schema drift fails at startup |
+| V17 | `player_news` | PK widened to `(source, news_id, player_id)` — one item appears in several players' feeds; the two-column PK silently collapsed those associations |
 
 Design principle: foreign keys on tables holding external source data that
-references real entities (`player_stats`, `player_projections`); no foreign key
-on the computed scoring table, the per-source landing table, or the audit table —
-all populated by application logic and recomputable from scratch. A landing
-table also can't carry a FK that would abort an ingest batch on an unresolved row.
+references real entities (`player_stats`, `player_projections`) and on true
+transactional child rows (`draft_pick`); no foreign key on the computed scoring
+table, the per-source landing tables, the audit table, or config tables — all
+populated by application logic and recomputable (or deliberately
+user-table-less). A landing table also can't carry a FK that would abort an
+ingest batch on an unresolved row.
 
 ## Tests
 
@@ -255,7 +360,15 @@ CRUD) is not. Four test patterns:
   verified on real PostgreSQL, since an in-memory database can report different
   results — the ranked-leaderboard test pins `RANK()` tie-and-skip behavior and
   null handling that H2 would get wrong; the reconciliation-writer test pins
-  upsert idempotency, ADP preservation, and touched-only re-score.
+  upsert idempotency, ADP preservation, and touched-only re-score; the vector
+  retrieval slice (fake 1536-dim embedding model, real pgvector) pins the
+  one-player filter and that old-generation embeddings never surface.
+
+Phase 4 adds two safety-property tests worth naming: the **schema test** parses
+the generated JSON schema of all six agent tools and asserts each exposes
+exactly its documented parameters (`sessionId`/`scoringRules` unreachable by
+construction), and the agent loop is tested with a **stubbed `ChatModel`**
+(scripted tool-call responses) — never a live model.
 
 ```bash
 ./mvnw test
@@ -271,7 +384,10 @@ CRUD) is not. Four test patterns:
 - [x] Phase 3 — User customization: natural-language league descriptions →
   validated spec → deterministically resolved scoring rules
   ([walkthrough](docs/phase-3-overview.md))
-- [ ] Phase 4 — AI draft assistant: agent with tool calling, real-time recommendations
+- [x] Phase 4 — AI draft assistant: draft domain + VORP engine, agentic tool
+  calling with six session-bound tools, team/schedule/depth-chart context,
+  vector news RAG, Java 21 / Boot 4 / Spring AI 2.0 migration
+  ([walkthrough](docs/phase-4-overview.md))
 - [ ] Phase 5 — In-season management: weekly updates, lineup decisions
 
 ## License
