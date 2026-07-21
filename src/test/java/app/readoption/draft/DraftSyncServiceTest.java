@@ -44,7 +44,6 @@ class DraftSyncServiceTest {
     private static final ObjectMapper MAPPER = JsonMapper.builder().build();
 
     private static final String DRAFT_ID = "1382999990000000001";
-    private static final String LEAGUE_DRAFT_ID = "1382308407742062592";
     private static final String USER_ID = "87732859926102016";
     private static final long CONFIG_ID = 42L;
     private static final long SESSION_ID = 99L;
@@ -122,10 +121,14 @@ class DraftSyncServiceTest {
     @Test
     @DisplayName("pre_draft -> WATCHING, no session created, no writes of any kind")
     void preDraftCreatesNothing() {
-        when(client.fetchDraft(DRAFT_ID))
-                .thenReturn(fixture("draft-pre_draft.json", SleeperDraft.class));
+        // fixture-loaded drafts key their stubs on the id INSIDE the fixture: the id
+        // in the file and a constant naming it are the same fact stored twice, and a
+        // fact stored twice will eventually disagree. DRAFT_ID stays for inline drafts.
+        SleeperDraft preDraft = fixture("draft-pre_draft.json", SleeperDraft.class);
+        String draftId = preDraft.draftId();
+        when(client.fetchDraft(draftId)).thenReturn(preDraft);
 
-        DraftSyncService.PollReport report = service().pollOnce(DRAFT_ID, CONFIG_ID, USER_ID);
+        DraftSyncService.PollReport report = service().pollOnce(draftId, CONFIG_ID, USER_ID);
 
         assertThat(report.status()).isEqualTo(DraftSyncStatus.WATCHING);
         assertThat(report.sessionId()).isNull();
@@ -149,14 +152,16 @@ class DraftSyncServiceTest {
     @Test
     @DisplayName("first drafting poll -> session snapshot from the draft object (teams/rounds/slot)")
     void firstDraftingPollCreatesSession() {
-        when(client.fetchDraft(DRAFT_ID)).thenReturn(draftingDraft());
-        when(sessionRepository.findBySleeperDraftId(DRAFT_ID)).thenReturn(Optional.empty());
+        SleeperDraft drafting = draftingDraft();
+        String draftId = drafting.draftId();
+        when(client.fetchDraft(draftId)).thenReturn(drafting);
+        when(sessionRepository.findBySleeperDraftId(draftId)).thenReturn(Optional.empty());
         when(leagueConfigRepository.findById(CONFIG_ID)).thenReturn(Optional.of(config(10)));
         writerAssignsId();
         when(pickRepository.findBySessionIdOrderByOverallPickNo(SESSION_ID)).thenReturn(List.of());
-        when(client.fetchPicks(DRAFT_ID)).thenReturn(List.of());
+        when(client.fetchPicks(draftId)).thenReturn(List.of());
 
-        DraftSyncService.PollReport report = service().pollOnce(DRAFT_ID, CONFIG_ID, USER_ID);
+        DraftSyncService.PollReport report = service().pollOnce(draftId, CONFIG_ID, USER_ID);
 
         ArgumentCaptor<DraftSession> captor = ArgumentCaptor.forClass(DraftSession.class);
         verify(writer).createSession(captor.capture());
@@ -166,7 +171,7 @@ class DraftSyncServiceTest {
         assertThat(created.getUserSlot()).isEqualTo(7);
         assertThat(created.getTotalRounds()).isEqualTo(15);   // the draft object, not the config sum
         assertThat(created.getStatus()).isEqualTo(DraftStatus.ACTIVE);
-        assertThat(created.getSleeperDraftId()).isEqualTo(DRAFT_ID);
+        assertThat(created.getSleeperDraftId()).isEqualTo(draftId);
         assertThat(created.getLeagueConfigId()).isEqualTo(CONFIG_ID);
 
         assertThat(report.status()).isEqualTo(DraftSyncStatus.SYNCING);
@@ -234,12 +239,14 @@ class DraftSyncServiceTest {
     @Test
     @DisplayName("gate: config teamCount != draft teams -> halt with both values")
     void gateTeamCountMismatch() {
-        when(client.fetchDraft(DRAFT_ID)).thenReturn(draftingDraft());   // teams=10
-        when(sessionRepository.findBySleeperDraftId(DRAFT_ID)).thenReturn(Optional.empty());
+        SleeperDraft drafting = draftingDraft();   // teams=10
+        String draftId = drafting.draftId();
+        when(client.fetchDraft(draftId)).thenReturn(drafting);
+        when(sessionRepository.findBySleeperDraftId(draftId)).thenReturn(Optional.empty());
         when(leagueConfigRepository.findById(CONFIG_ID)).thenReturn(Optional.of(config(12)));
 
         assertThatIllegalStateException()
-                .isThrownBy(() -> service().pollOnce(DRAFT_ID, CONFIG_ID, USER_ID))
+                .isThrownBy(() -> service().pollOnce(draftId, CONFIG_ID, USER_ID))
                 .withMessageContaining("teamCount=12")
                 .withMessageContaining("teams=10");
         verify(writer, never()).createSession(any());
@@ -250,15 +257,17 @@ class DraftSyncServiceTest {
     @Test
     @DisplayName("set-difference inserts only unseen pick_nos")
     void setDifferenceInsertsOnlyUnseen() {
-        when(client.fetchDraft(DRAFT_ID)).thenReturn(draftingDraft());
-        when(sessionRepository.findBySleeperDraftId(DRAFT_ID))
-                .thenReturn(Optional.of(syncedSession(DRAFT_ID, DraftStatus.ACTIVE)));
+        SleeperDraft drafting = draftingDraft();
+        String draftId = drafting.draftId();
+        when(client.fetchDraft(draftId)).thenReturn(drafting);
+        when(sessionRepository.findBySleeperDraftId(draftId))
+                .thenReturn(Optional.of(syncedSession(draftId, DraftStatus.ACTIVE)));
         when(pickRepository.findBySessionIdOrderByOverallPickNo(SESSION_ID)).thenReturn(List.of(
                 DraftPick.builder().sessionId(SESSION_ID).overallPickNo(1).playerId("9221").build(),
                 DraftPick.builder().sessionId(SESSION_ID).overallPickNo(2).playerId("7564").build()));
-        when(client.fetchPicks(DRAFT_ID)).thenReturn(pickFixture("picks-live-3.json"));
+        when(client.fetchPicks(draftId)).thenReturn(pickFixture("picks-live-3.json"));
 
-        DraftSyncService.PollReport report = service().pollOnce(DRAFT_ID, CONFIG_ID, USER_ID);
+        DraftSyncService.PollReport report = service().pollOnce(draftId, CONFIG_ID, USER_ID);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<DraftPick>> captor = ArgumentCaptor.forClass(List.class);
@@ -273,15 +282,17 @@ class DraftSyncServiceTest {
     @Test
     @DisplayName("is_keeper non-null -> halt (unobserved variant)")
     void isKeeperHalts() {
-        when(client.fetchDraft(DRAFT_ID)).thenReturn(draftingDraft());
-        when(sessionRepository.findBySleeperDraftId(DRAFT_ID))
-                .thenReturn(Optional.of(syncedSession(DRAFT_ID, DraftStatus.ACTIVE)));
+        SleeperDraft drafting = draftingDraft();
+        String draftId = drafting.draftId();
+        when(client.fetchDraft(draftId)).thenReturn(drafting);
+        when(sessionRepository.findBySleeperDraftId(draftId))
+                .thenReturn(Optional.of(syncedSession(draftId, DraftStatus.ACTIVE)));
         when(pickRepository.findBySessionIdOrderByOverallPickNo(SESSION_ID)).thenReturn(List.of());
-        when(client.fetchPicks(DRAFT_ID)).thenReturn(List.of(
+        when(client.fetchPicks(draftId)).thenReturn(List.of(
                 new SleeperDraftPick(1, 1, 1, "9221", true, 2)));
 
         assertThatIllegalStateException()
-                .isThrownBy(() -> service().pollOnce(DRAFT_ID, CONFIG_ID, USER_ID))
+                .isThrownBy(() -> service().pollOnce(draftId, CONFIG_ID, USER_ID))
                 .withMessageContaining("is_keeper=true");
         verify(writer, never()).insertPicks(anyList());
     }
