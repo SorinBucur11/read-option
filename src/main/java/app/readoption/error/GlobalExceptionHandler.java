@@ -5,6 +5,8 @@ import app.readoption.customization.LeagueConfigNotFoundException;
 import app.readoption.customization.LeagueConfigNotReadyException;
 import app.readoption.draft.DraftSessionNotActiveException;
 import app.readoption.draft.DraftSessionNotFoundException;
+import app.readoption.draft.DraftSyncConflictException;
+import app.readoption.draft.DraftSyncNotFoundException;
 import app.readoption.draft.InvalidDraftRequestException;
 import app.readoption.draft.PlayerAlreadyDraftedException;
 import app.readoption.espn.EspnUnavailableException;
@@ -115,6 +117,22 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
         pd.setTitle("League Config Not Found");
         pd.setType(URI.create("https://readoption.app/problems/league-config-not-found"));
+        return pd;
+    }
+
+    @ExceptionHandler(DraftSyncConflictException.class)
+    public ProblemDetail handleDraftSyncConflict(DraftSyncConflictException ex) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        pd.setTitle("Draft Sync Conflict");
+        pd.setType(URI.create("https://readoption.app/problems/draft-sync-conflict"));
+        return pd;
+    }
+
+    @ExceptionHandler(DraftSyncNotFoundException.class)
+    public ProblemDetail handleDraftSyncNotFound(DraftSyncNotFoundException ex) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
+        pd.setTitle("Draft Sync Not Found");
+        pd.setType(URI.create("https://readoption.app/problems/draft-sync-not-found"));
         return pd;
     }
 
