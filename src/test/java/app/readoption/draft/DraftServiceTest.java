@@ -174,6 +174,22 @@ class DraftServiceTest {
     }
 
     @Test
+    @DisplayName("manual pick on a Sleeper-synced session -> 409 (single-writer by prevention)")
+    void recordPickRejectedOnSyncedSession() {
+        DraftSession synced = DraftSession.builder()
+                .id(SESSION_ID).leagueConfigId(CONFIG_ID).season(SEASON)
+                .teamCount(10).userSlot(8).totalRounds(13).status(DraftStatus.ACTIVE)
+                .sleeperDraftId("1382308407742062592")
+                .build();
+        when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(synced));
+
+        assertThatExceptionOfType(DraftSyncConflictException.class)
+                .isThrownBy(() -> service().recordPick(SESSION_ID, new RecordPickRequest("4866")))
+                .withMessageContaining("Sleeper-synced");
+        verify(pickRepository, never()).saveAndFlush(any(DraftPick.class));
+    }
+
+    @Test
     @DisplayName("unknown player -> PlayerNotFoundException (404)")
     void recordPickUnknownPlayer() {
         when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session(DraftStatus.ACTIVE)));

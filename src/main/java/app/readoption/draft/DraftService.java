@@ -101,6 +101,12 @@ public class DraftService {
         if (session.getStatus() != DraftStatus.ACTIVE) {
             throw new DraftSessionNotActiveException(sessionId, session.getStatus());
         }
+        if (session.getSleeperDraftId() != null) {
+            // single-writer by prevention: the sync loop is the only writer on a
+            // linked session, so max+1 sequencing can never race a second caller.
+            throw new DraftSyncConflictException(
+                    "session " + sessionId + " is Sleeper-synced; picks arrive via sync");
+        }
         String playerId = request.playerId();
         if (!playerRepository.existsById(playerId)) {
             throw new PlayerNotFoundException(playerId);
@@ -118,12 +124,6 @@ public class DraftService {
         try {
             pickRepository.saveAndFlush(pick);
         } catch (DataIntegrityViolationException e) {
-            // TODO(4.x): two concurrent recordPick calls both compute max+1 and collide
-            // on the composite PK — a different constraint, so this check correctly
-            // won't match and one caller gets a 500. Acceptable while the app is
-            // single-writer; when the Sleeper live-draft sync becomes a second writer,
-            // translate the PK collision into a retry-once here or a 409 "pick number
-            // contended".
             if (isDuplicatePlayerViolation(e)) {
                 throw new PlayerAlreadyDraftedException(playerId, null);
             }
