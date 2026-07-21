@@ -51,6 +51,15 @@ public class DraftSession {
     @Enumerated(EnumType.STRING)
     private DraftStatus status;
 
+    /**
+     * Binds this session to a live Sleeper draft (Phase 5.0). NULL = manual
+     * session; non-null makes the sync the single writer — manual picks are
+     * rejected with 409. UNIQUE in the DB: relinking a synced draft resumes this
+     * session, never creates a sibling. Frozen at creation like the rest.
+     */
+    @Column(name = "sleeper_draft_id", updatable = false)
+    private String sleeperDraftId;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
