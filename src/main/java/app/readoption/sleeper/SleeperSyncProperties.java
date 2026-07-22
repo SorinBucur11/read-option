@@ -29,15 +29,23 @@ public record SleeperSyncProperties(
 ) {
 
     /**
-     * @param pollInterval sleep between polls of a watched draft.
-     * @param errorBudget  consecutive poll failures tolerated before the loop
-     *                     halts loudly with status ERROR. A success resets the
-     *                     counter; validation-gate halts ignore the budget.
+     * @param pollInterval         sleep between polls of a watched draft.
+     * @param errorBudget          consecutive poll failures tolerated before the
+     *                             loop halts loudly with status ERROR. A success
+     *                             resets the counter; validation-gate halts ignore
+     *                             the budget.
+     * @param completionGracePolls consecutive polls tolerated with the draft
+     *                             complete at Sleeper but the picks array short of
+     *                             teams x rounds, before the loop halts loudly with
+     *                             status ERROR. Independent of {@code errorBudget};
+     *                             reset by any poll whose count is honest.
      */
     public record Sync(
 
             @NotNull Duration pollInterval,
 
-            @Min(1) @Max(100) int errorBudget
+            @Min(1) @Max(100) int errorBudget,
+
+            @Min(1) @Max(200) int completionGracePolls
     ) {}
 }

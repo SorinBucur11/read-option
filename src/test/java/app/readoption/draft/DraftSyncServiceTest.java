@@ -103,6 +103,28 @@ class DraftSyncServiceTest {
                 .build();
     }
 
+    private static DraftSession session12x14(DraftStatus status) {
+        return DraftSession.builder()
+                .id(SESSION_ID).leagueConfigId(CONFIG_ID).season(2026)
+                .teamCount(12).userSlot(7).totalRounds(14)
+                .status(status).sleeperDraftId(DRAFT_ID)
+                .build();
+    }
+
+    /**
+     * Snake-consistent picks 1..count — slot/round from {@link SnakeOrder} so the
+     * cross-check (tested on its own against the p5 fixture) stays out of the way
+     * and the completion count gate is the only thing under test.
+     */
+    private static List<SleeperDraftPick> snakePicks(int count, int teams) {
+        List<SleeperDraftPick> picks = new ArrayList<>();
+        for (int pickNo = 1; pickNo <= count; pickNo++) {
+            picks.add(new SleeperDraftPick(pickNo, SnakeOrder.roundOf(pickNo, teams),
+                    SnakeOrder.teamFor(pickNo, teams), "p" + pickNo, null, pickNo % teams + 1));
+        }
+        return picks;
+    }
+
     /** The writer returns the persisted session: same snapshot, id assigned. */
     private void writerAssignsId() {
         when(writer.createSession(any(DraftSession.class))).thenAnswer(inv -> {
@@ -297,11 +319,14 @@ class DraftSyncServiceTest {
         verify(writer, never()).insertPicks(anyList());
     }
 
-    // ----- complete -----
+    // ----- complete: the count gate (5.0-b — the Run B premature-termination incident) -----
 
     @Test
-    @DisplayName("complete -> final sweep, then session marked COMPLETE")
-    void completeFinalSweep() {
+    @DisplayName("complete with a short picks array (the incident shape) -> SYNCING + shortfall, sweep kept, no markComplete")
+    void completeShortArrayKeepsPollingTheIncidentShape() {
+        // Formerly completeFinalSweep: 3 picks against a 10x15 draft used to earn
+        // COMPLETE — exactly how Run B stopped at 166/168. Now the count gate
+        // demands 150 and this is the shortfall path.
         SleeperDraft complete = draft("complete", "snake", 0, Map.of(USER_ID, 7), 10, 15);
         DraftSession session = syncedSession(DRAFT_ID, DraftStatus.ACTIVE);
         when(client.fetchDraft(DRAFT_ID)).thenReturn(complete);
@@ -311,23 +336,84 @@ class DraftSyncServiceTest {
 
         DraftSyncService.PollReport report = service().pollOnce(DRAFT_ID, CONFIG_ID, USER_ID);
 
-        assertThat(report.status()).isEqualTo(DraftSyncStatus.COMPLETE);
+        assertThat(report.status()).isEqualTo(DraftSyncStatus.SYNCING);
         assertThat(report.picksInserted()).isEqualTo(3);
-        verify(writer).markComplete(session);
+        assertThat(report.shortfall()).isEqualTo(147);
+        verify(writer, never()).markComplete(any());
     }
 
     @Test
-    @DisplayName("complete on an already-COMPLETE session -> no re-mark")
+    @DisplayName("complete at full count on an already-COMPLETE session -> no re-mark")
     void completeAlreadyComplete() {
+        // 5.0-b: fixture grew from 0 to the full 150 — the empty array no longer
+        // reaches the mark/re-mark branch (it is a shortfall now); assertion unchanged.
         SleeperDraft complete = draft("complete", "snake", 0, Map.of(USER_ID, 7), 10, 15);
         DraftSession session = syncedSession(DRAFT_ID, DraftStatus.COMPLETE);
         when(client.fetchDraft(DRAFT_ID)).thenReturn(complete);
         when(sessionRepository.findBySleeperDraftId(DRAFT_ID)).thenReturn(Optional.of(session));
         when(pickRepository.findBySessionIdOrderByOverallPickNo(SESSION_ID)).thenReturn(List.of());
-        when(client.fetchPicks(DRAFT_ID)).thenReturn(List.of());
+        when(client.fetchPicks(DRAFT_ID)).thenReturn(snakePicks(150, 10));
 
-        service().pollOnce(DRAFT_ID, CONFIG_ID, USER_ID);
+        DraftSyncService.PollReport report = service().pollOnce(DRAFT_ID, CONFIG_ID, USER_ID);
 
+        assertThat(report.status()).isEqualTo(DraftSyncStatus.COMPLETE);
+        verify(writer, never()).markComplete(any());
+    }
+
+    @Test
+    @DisplayName("complete + picks at 168/168 -> COMPLETE, markComplete, shortfall 0")
+    void completeFullCountEarnsComplete() {
+        SleeperDraft complete = draft("complete", "snake", 0, Map.of(USER_ID, 7), 12, 14);
+        DraftSession session = session12x14(DraftStatus.ACTIVE);
+        when(client.fetchDraft(DRAFT_ID)).thenReturn(complete);
+        when(sessionRepository.findBySleeperDraftId(DRAFT_ID)).thenReturn(Optional.of(session));
+        when(pickRepository.findBySessionIdOrderByOverallPickNo(SESSION_ID)).thenReturn(List.of());
+        when(client.fetchPicks(DRAFT_ID)).thenReturn(snakePicks(168, 12));
+
+        DraftSyncService.PollReport report = service().pollOnce(DRAFT_ID, CONFIG_ID, USER_ID);
+
+        assertThat(report.status()).isEqualTo(DraftSyncStatus.COMPLETE);
+        assertThat(report.totalPicks()).isEqualTo(168);
+        assertThat(report.shortfall()).isZero();
+        verify(writer).markComplete(session);
+    }
+
+    @Test
+    @DisplayName("complete + picks at 166/168 -> SYNCING, shortfall 2, no markComplete, the 166 still inserted")
+    void completeShortfallTwo() {
+        SleeperDraft complete = draft("complete", "snake", 0, Map.of(USER_ID, 7), 12, 14);
+        DraftSession session = session12x14(DraftStatus.ACTIVE);
+        when(client.fetchDraft(DRAFT_ID)).thenReturn(complete);
+        when(sessionRepository.findBySleeperDraftId(DRAFT_ID)).thenReturn(Optional.of(session));
+        when(pickRepository.findBySessionIdOrderByOverallPickNo(SESSION_ID)).thenReturn(List.of());
+        when(client.fetchPicks(DRAFT_ID)).thenReturn(snakePicks(166, 12));
+
+        DraftSyncService.PollReport report = service().pollOnce(DRAFT_ID, CONFIG_ID, USER_ID);
+
+        assertThat(report.status()).isEqualTo(DraftSyncStatus.SYNCING);
+        assertThat(report.shortfall()).isEqualTo(2);
+        verify(writer, never()).markComplete(any());
+        // recovery data is never discarded: the short sweep still landed
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<DraftPick>> captor = ArgumentCaptor.forClass(List.class);
+        verify(writer).insertPicks(captor.capture());
+        assertThat(captor.getValue()).hasSize(166);
+    }
+
+    @Test
+    @DisplayName("complete + picks at 169/168 (> expected) -> halt naming both counts")
+    void completeOvercountHalts() {
+        SleeperDraft complete = draft("complete", "snake", 0, Map.of(USER_ID, 7), 12, 14);
+        when(client.fetchDraft(DRAFT_ID)).thenReturn(complete);
+        when(sessionRepository.findBySleeperDraftId(DRAFT_ID))
+                .thenReturn(Optional.of(session12x14(DraftStatus.ACTIVE)));
+        when(pickRepository.findBySessionIdOrderByOverallPickNo(SESSION_ID)).thenReturn(List.of());
+        when(client.fetchPicks(DRAFT_ID)).thenReturn(snakePicks(169, 12));
+
+        assertThatIllegalStateException()
+                .isThrownBy(() -> service().pollOnce(DRAFT_ID, CONFIG_ID, USER_ID))
+                .withMessageContaining("169")
+                .withMessageContaining("168");
         verify(writer, never()).markComplete(any());
     }
 

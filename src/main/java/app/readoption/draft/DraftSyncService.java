@@ -59,7 +59,7 @@ public class DraftSyncService {
         SleeperDraft draft = client.fetchDraft(draftId);
         return switch (draft.status()) {
             // no session may exist yet — draft_order is null until drafting (probe-verified)
-            case "pre_draft" -> new PollReport(DraftSyncStatus.WATCHING, null, 0, 0);
+            case "pre_draft" -> new PollReport(DraftSyncStatus.WATCHING, null, 0, 0, 0);
             case "drafting" -> {
                 DraftSession session = ensureSession(draft, leagueConfigId, userId);
                 yield syncPicks(draft, session, DraftSyncStatus.SYNCING);
@@ -67,6 +67,24 @@ public class DraftSyncService {
             case "complete" -> {
                 DraftSession session = ensureSession(draft, leagueConfigId, userId);
                 PollReport report = syncPicks(draft, session, DraftSyncStatus.COMPLETE);
+                // Sleeper flips status to complete before the picks array settles
+                // (Run B incident: 166/168 captured, marked COMPLETE, stopped).
+                // COMPLETE is only earned when the count agrees with teams x rounds —
+                // both from this same draft object, no config involvement.
+                int expected = draft.settings().teams() * draft.settings().rounds();
+                if (report.totalPicks() > expected) {
+                    throw new IllegalStateException("draft " + draftId + " holds "
+                            + report.totalPicks() + " picks but " + draft.settings().teams()
+                            + " teams x " + draft.settings().rounds() + " rounds = " + expected
+                            + " — more picks than the draft can hold");
+                }
+                if (report.totalPicks() < expected) {
+                    log.warn("draft {} complete at Sleeper but picks array holds {}/{} — continuing to poll",
+                            draftId, report.totalPicks(), expected);
+                    yield new PollReport(DraftSyncStatus.SYNCING, report.sessionId(),
+                            report.picksInserted(), report.totalPicks(),
+                            expected - report.totalPicks());
+                }
                 if (session.getStatus() != DraftStatus.COMPLETE) {
                     writer.markComplete(session);
                 }
@@ -178,18 +196,21 @@ public class DraftSyncService {
             log.info("draft {}: synced {} new pick(s), {} total", draft.draftId(), rows.size(),
                     persisted.size() + rows.size());
         }
-        return new PollReport(observed, session.getId(), rows.size(), persisted.size() + rows.size());
+        return new PollReport(observed, session.getId(), rows.size(), persisted.size() + rows.size(), 0);
     }
 
     /**
      * What one poll observed: the sync status implied by the draft's lifecycle,
-     * the bound session (null while WATCHING), picks inserted by this poll, and
-     * the cumulative persisted count after it.
+     * the bound session (null while WATCHING), picks inserted by this poll, the
+     * cumulative persisted count after it, and the shortfall — non-zero means
+     * "Sleeper says complete but the picks array hasn't settled to the expected
+     * count" ({@code expected - totalPicks}; 0 on every other path).
      */
     public record PollReport(
             DraftSyncStatus status,
             Long sessionId,
             int picksInserted,
-            int totalPicks
+            int totalPicks,
+            int shortfall
     ) {}
 }

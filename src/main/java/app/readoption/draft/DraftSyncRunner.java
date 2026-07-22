@@ -110,6 +110,7 @@ public class DraftSyncRunner {
 
     private void runLoop(SyncHandle handle, long leagueConfigId, String userId) {
         int consecutiveFailures = 0;
+        int consecutiveShortfalls = 0;
         while (!handle.stopRequested) {
             try {
                 DraftSyncService.PollReport report =
@@ -119,6 +120,22 @@ public class DraftSyncRunner {
                 handle.picksSynced = report.totalPicks();
                 handle.error = null;
                 consecutiveFailures = 0;
+                // Completion-shortfall grace: a separate counter from the failure
+                // budget — a transport blip must not reset the settle clock, and a
+                // short poll is a successful poll, not a failure.
+                if (report.shortfall() > 0) {
+                    consecutiveShortfalls++;
+                    if (consecutiveShortfalls >= properties.sync().completionGracePolls()) {
+                        handle.status = DraftSyncStatus.ERROR;
+                        handle.error = "draft complete at Sleeper but picks settled at "
+                                + report.totalPicks() + "/" + (report.totalPicks() + report.shortfall())
+                                + " after " + consecutiveShortfalls + " grace polls — relink to retry";
+                        log.error("Sleeper sync halted for draft {}: {}", handle.draftId, handle.error);
+                        return;
+                    }
+                } else {
+                    consecutiveShortfalls = 0;
+                }
                 handle.status = report.status();
                 if (report.status() == DraftSyncStatus.COMPLETE) {
                     log.info("Sleeper sync complete for draft {}: {} picks", handle.draftId,

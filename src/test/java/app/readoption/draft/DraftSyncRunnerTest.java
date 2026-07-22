@@ -45,8 +45,13 @@ class DraftSyncRunnerTest {
     @Mock private SleeperDraftClient client;
 
     private DraftSyncRunner runner(String username, int errorBudget) {
+        return runner(username, errorBudget, 20);
+    }
+
+    private DraftSyncRunner runner(String username, int errorBudget, int completionGracePolls) {
         return new DraftSyncRunner(syncService, client, new SleeperSyncProperties(
-                username, new SleeperSyncProperties.Sync(Duration.ofMillis(5), errorBudget)));
+                username, new SleeperSyncProperties.Sync(Duration.ofMillis(5), errorBudget,
+                        completionGracePolls)));
     }
 
     private void stubStartValidation() {
@@ -127,7 +132,7 @@ class DraftSyncRunnerTest {
             if (polls.incrementAndGet() % 3 != 0) {
                 throw new RestClientException("flaky");
             }
-            return new DraftSyncService.PollReport(DraftSyncStatus.WATCHING, null, 0, 0);
+            return new DraftSyncService.PollReport(DraftSyncStatus.WATCHING, null, 0, 0, 0);
         });
         DraftSyncRunner runner = runner("sosososik", 3);
 
@@ -160,7 +165,7 @@ class DraftSyncRunnerTest {
     void completeEndsLoop() {
         stubStartValidation();
         when(syncService.pollOnce(eq(DRAFT_ID), eq(CONFIG_ID), eq(USER_ID)))
-                .thenReturn(new DraftSyncService.PollReport(DraftSyncStatus.COMPLETE, 99L, 0, 150));
+                .thenReturn(new DraftSyncService.PollReport(DraftSyncStatus.COMPLETE, 99L, 0, 150, 0));
         DraftSyncRunner runner = runner("sosososik", 5);
 
         runner.start(DRAFT_ID, CONFIG_ID);
@@ -171,12 +176,73 @@ class DraftSyncRunnerTest {
         assertThat(report.picksSynced()).isEqualTo(150);
     }
 
+    // ----- completion-shortfall grace (5.0-b) -----
+
+    @Test
+    @DisplayName("shortfall streak reaches the grace budget -> ERROR naming both counts, loop stopped")
+    void completionGraceExhausted() {
+        stubStartValidation();
+        when(syncService.pollOnce(eq(DRAFT_ID), eq(CONFIG_ID), eq(USER_ID)))
+                .thenReturn(new DraftSyncService.PollReport(DraftSyncStatus.SYNCING, 99L, 0, 166, 2));
+        DraftSyncRunner runner = runner("sosososik", 5, 3);
+
+        runner.start(DRAFT_ID, CONFIG_ID);
+        DraftSyncStatus.Report report = await(runner, DRAFT_ID, r -> r.state().isTerminal());
+
+        assertThat(report.state()).isEqualTo(DraftSyncStatus.ERROR);
+        assertThat(report.error()).contains("166/168").contains("relink");
+        verify(syncService, times(3)).pollOnce(anyString(), anyLong(), anyString());
+    }
+
+    @Test
+    @DisplayName("shortfall streak broken by the array settling -> COMPLETE, no ERROR")
+    void shortfallSettlesWithinGrace() {
+        stubStartValidation();
+        AtomicInteger polls = new AtomicInteger();
+        when(syncService.pollOnce(eq(DRAFT_ID), eq(CONFIG_ID), eq(USER_ID))).thenAnswer(inv ->
+                polls.incrementAndGet() < 3
+                        ? new DraftSyncService.PollReport(DraftSyncStatus.SYNCING, 99L, 0, 166, 2)
+                        : new DraftSyncService.PollReport(DraftSyncStatus.COMPLETE, 99L, 2, 168, 0));
+        DraftSyncRunner runner = runner("sosososik", 5, 3);
+
+        runner.start(DRAFT_ID, CONFIG_ID);
+        DraftSyncStatus.Report report = await(runner, DRAFT_ID, r -> r.state().isTerminal());
+
+        assertThat(report.state()).isEqualTo(DraftSyncStatus.COMPLETE);
+        assertThat(report.error()).isNull();
+        assertThat(report.picksSynced()).isEqualTo(168);
+    }
+
+    @Test
+    @DisplayName("grace counter independent of the failure budget: alternating failure/shortfall trips neither prematurely")
+    void graceIndependentOfFailureBudget() {
+        stubStartValidation();
+        AtomicInteger polls = new AtomicInteger();
+        when(syncService.pollOnce(eq(DRAFT_ID), eq(CONFIG_ID), eq(USER_ID))).thenAnswer(inv -> {
+            if (polls.incrementAndGet() % 2 == 1) {
+                throw new RestClientException("Sleeper 503");
+            }
+            return new DraftSyncService.PollReport(DraftSyncStatus.SYNCING, 99L, 0, 166, 2);
+        });
+        // 8 alternating polls: failures never consecutive (budget 3 untouched),
+        // shortfalls reach 4 (grace 10 untouched) — a failure must NOT reset the
+        // shortfall streak, but neither counter may trip here.
+        DraftSyncRunner runner = runner("sosososik", 3, 10);
+
+        runner.start(DRAFT_ID, CONFIG_ID);
+        await(runner, DRAFT_ID, r -> polls.get() >= 8);
+
+        assertThat(runner.status(DRAFT_ID).state()).isNotEqualTo(DraftSyncStatus.ERROR);
+        DraftSyncStatus.Report stopped = runner.stop(DRAFT_ID);
+        assertThat(stopped.state()).isEqualTo(DraftSyncStatus.STOPPED);
+    }
+
     @Test
     @DisplayName("stop -> cooperative STOPPED; duplicate start conflicts while running, allowed after")
     void stopAndRestart() {
         stubStartValidation();
         when(syncService.pollOnce(eq(DRAFT_ID), eq(CONFIG_ID), eq(USER_ID)))
-                .thenReturn(new DraftSyncService.PollReport(DraftSyncStatus.WATCHING, null, 0, 0));
+                .thenReturn(new DraftSyncService.PollReport(DraftSyncStatus.WATCHING, null, 0, 0, 0));
         DraftSyncRunner runner = runner("sosososik", 5);
 
         runner.start(DRAFT_ID, CONFIG_ID);
