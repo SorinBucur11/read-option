@@ -61,7 +61,20 @@ demonstrated the need. Mid-phase the platform migrated to Java 21 / Spring Boot
 4 / Spring AI 2.0. Full walkthrough, concepts, tables, and run examples:
 **[docs/phase-4-overview.md](docs/phase-4-overview.md)**.
 
-Next up: **Phase 5 — in-season management** (weekly updates, lineup decisions).
+**Phase 5 — live Sleeper draft sync: in progress.** 5.0 is complete and
+live-verified against real Sleeper bot drafts: link a Sleeper draft to a
+confirmed league config and a background loop (one virtual thread, 3s cadence)
+mirrors every pick into the session ledger automatically — deferred session
+creation from the draft's own facts, an idempotent set-difference sweep that
+makes crash-restart-relink a non-event, snake-arithmetic cross-checks that
+halt loudly on anything unmodeled (traded picks, keepers, 3RR), and a
+completion count gate that refuses to mark a draft COMPLETE until the pick
+count honestly equals teams × rounds (added by 5.0-b after Sleeper flipped a
+live draft to complete with 166 of 168 picks settled). Manual picks on a
+synced session are rejected — the poll loop is the single writer. Draft-night
+operations manual: **[docs/phase-5-runbook.md](docs/phase-5-runbook.md)**.
+
+Next up: **Phase X — in-season management** (weekly updates, lineup decisions).
 
 ## What it does today
 
@@ -108,6 +121,13 @@ Next up: **Phase 5 — in-season management** (weekly updates, lineup decisions)
   config at creation, every pick (yours and opponents') lands in an insert-only
   ledger with server-assigned pick numbers, and snake-order team assignment is
   derived arithmetic, never stored.
+- **Syncs** a live Sleeper draft into that ledger hands-free: a background
+  poll loop creates the session on the first `drafting` observation (teams,
+  rounds, and your slot taken from the draft object itself), mirrors picks by
+  set-difference (restart/relink recovers exactly what's missing), cross-checks
+  every pick against snake arithmetic, and only marks COMPLETE when the count
+  equals teams × rounds — short counts keep polling under a bounded grace, then
+  fail loud. Manual picks on a synced session are refused (single writer).
 - **Advises** on the clock: a conversational agent (`POST /advise`) runs a
   manual tool-calling loop over six session-bound read-only tools — draft
   state, VORP board, player profile (history + projection + role/injury/bye/
@@ -291,6 +311,19 @@ POST /api/draft/sessions/{id}/advise      { message }
         tool iterations). Returns { advice, iterations, totalTokens,
         latencyMs }. Session-scoped memory recalls prior turns.
 
+POST /api/sleeper/sync                    { draftId, leagueConfigId }
+        Link a live Sleeper draft (202; loop starts). WATCHING until the draft
+        starts, then the session is created and picks mirror automatically.
+        Relinking after a crash/stop/error is the recovery move — idempotent
+        catch-up. Requires readoption.sleeper.username set locally.
+
+GET  /api/sleeper/sync/{draftId}
+        Sync status: { draftId, state, sessionId, picksSynced, lastPollAt,
+        error }. States: WATCHING / SYNCING / COMPLETE / STOPPED / ERROR.
+
+POST /api/sleeper/sync/{draftId}/stop
+        Cooperative stop; session and picks are kept. Relink to resume.
+
 POST /api/teams/schedule/sync?season=2026
         ESPN schedule into team_schedule + derived bye weeks (delete-and-reload
         per team, loud bye derivation).
@@ -331,6 +364,7 @@ Schema is managed by Flyway migrations in `src/main/resources/db/migration`:
 | V15 | `player_news` | News landing: insert-only, verbatim, permanent (source retention is opaque — this is the only durable record); `published TIMESTAMPTZ` is the citation fact; `source_payload JSONB`; **no FK** |
 | V16 | `news_embedding` | The pgvector table (+ `CREATE EXTENSION vector`): deterministic UUID id, `content`, `metadata JSONB`, `embedding VECTOR(1536)`, HNSW cosine index. Owned by Spring AI's `PgVectorStore` (no JPA entity); the bean boots with validation on, so schema drift fails at startup |
 | V17 | `player_news` | PK widened to `(source, news_id, player_id)` — one item appears in several players' feeds; the two-column PK silently collapsed those associations |
+| V18 | `draft_session` | Adds nullable `sleeper_draft_id` + UNIQUE — binds a session to a live Sleeper draft; null means a manual session, and the relink finder keys on it |
 
 Design principle: foreign keys on tables holding external source data that
 references real entities (`player_stats`, `player_projections`) and on true
@@ -388,7 +422,11 @@ construction), and the agent loop is tested with a **stubbed `ChatModel`**
   calling with six session-bound tools, team/schedule/depth-chart context,
   vector news RAG, Java 21 / Boot 4 / Spring AI 2.0 migration
   ([walkthrough](docs/phase-4-overview.md))
-- [ ] Phase 5 — In-season management: weekly updates, lineup decisions
+- [ ] Phase 5 — Live Sleeper draft sync: **5.0 complete** (poll loop, deferred
+  session creation, set-difference mirroring, count-gated completion,
+  single-writer guard — [runbook](docs/phase-5-runbook.md)); next: 5.1 K/DEF
+  roster modeling
+- [ ] Phase X — In-season management: weekly updates, lineup decisions
 
 ## License
 

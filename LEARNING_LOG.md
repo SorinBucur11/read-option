@@ -4933,3 +4933,194 @@ so the architectural lever is ledgered, not built.
   for the NEXT run is the honest record — and the reviewer's framing is not
   above the frozen criterion either.
 - Prompts move categories, not vocabulary habits — predict accordingly.
+
+---
+
+# Phase 5.0 — Sleeper Live Draft Sync (+ 5.0-a fixture provenance, 5.0-b completion guard)
+
+**Resequencing decision (recorded, not drifted):** 4.5 (strategy layer) PARKED,
+not dropped — the live-draft sync has a seasonal window (camp/draft season) and
+the strategy layer doesn't. When one increment has a hard external deadline and
+the other doesn't, the window wins. 4.5 is NEXT after closure.
+
+## What I did (concrete)
+
+- **Probe session before any design** (the standing ritual): 8 captures against
+  the real Sleeper API — user, leagues, drafts, draft objects (pre_draft /
+  drafting / complete), picks arrays (mid-draft and complete). Plus one
+  discriminating check against my own probe data (K/DEF pick shapes) and three
+  psql checks that closed a design question without code.
+- **Design session** produced D1–D7 and a full executor spec; Claude Code built
+  it: V18 migration (`draft_session.sleeper_draft_id`, nullable UNIQUE),
+  `SleeperDraftClient` + DTOs (RestClient idiom), `DraftSyncService.pollOnce`
+  (the testable core: exhaustive status match, ordered creation gates,
+  set-difference pick sync, per-pick snake cross-check), `DraftSyncWriter`
+  (transactional bean, news-writer precedent), `DraftSyncRunner` (one virtual
+  thread per draft, error budget), three endpoints, single-writer guard in
+  `recordPick` (409 on synced sessions; TODO(4.x) resolved by PREVENTION).
+- **5.0-a:** replaced two executor-reconstructed test fixtures with the real
+  captured payloads; refactored the tests to derive the draft id FROM the
+  fixture (derive-don't-duplicate).
+- **5.0-b:** completion-shortfall guard after Run B caught a live race —
+  Sleeper flips `status=complete` before the picks array settles; the sync
+  stopped green at 166/168. Fix: the complete branch demands count agreement
+  (WARN + keep polling on shortfall; bounded grace → loud ERROR; `> expected`
+  → gate halt), `markComplete` only on the full-count path.
+- **Acceptance:** frozen runbook (v1 → v1.1 operational fill-in, changelogged);
+  Run A (10-team) — link/deferred-creation, mid-draft consistency, kill-restart
+  catch-up, grounded mid-draft agent answers, live 409 guard, 150/150 set
+  equality incl. all 20 K/DEF picks; Run B (12-team) — snake arithmetic
+  validated at a second modulus, 168/168 after the race was healed by relink.
+  5.0-b acceptance draft passed post-fix (owner-verified).
+  [fill: final count/shape of the 5.0-b acceptance draft; whether the shortfall
+  WARN fired, and if so the WARN→settle timestamps — the grace-tuning number]
+- Suite: 347 → **389 green** (36 in 5.0, 6 in 5.0-b; 5.0-a net-zero).
+
+## What I learned (patterns, concepts)
+
+- **Snapshot-at-availability:** `draft_order` is null pre-draft, so the session
+  row is CREATED at the `pre_draft → drafting` transition — creation deferred
+  until every fact exists. The 4.1 snapshot-at-creation invariant survives
+  intact by moving the creation moment instead of weakening the snapshot.
+- **Sequence-ownership inversion:** manual mode = client reports the fact,
+  server owns the sequence; synced mode = Sleeper owns the sequence, server
+  VERIFIES it (per-pick snake cross-check as a runtime grounding gate).
+- **Single-writer by prevention beats collision handling:** rejecting manual
+  picks on synced sessions (409) made the concurrent-pick retry logic
+  unnecessary; the composite PK stays as backstop.
+- **Set-difference as the recovery mechanism:** fetch-full-array + anti-join on
+  pick_no is idempotent by construction — restart, relink, mid-draft link, and
+  one-shot import of a completed draft are all the SAME code path. It healed
+  both incidents in this phase (the botched kill drill and the completion race)
+  with zero recovery-specific code.
+- **Status flags lie; counts don't:** `status=complete` preceded picks-array
+  finality. A terminal decision must demand agreement between the flag and the
+  count. Green-and-wrong is the plausible-degradation shape; the guard makes
+  the system refuse to believe a green lie.
+- **Two coordinate systems on the wire:** draft_slot (snake arithmetic space)
+  vs roster_id (league identity space); `slot_to_roster_id` is identity on some
+  drafts and not others — always read, never infer. Same lesson shape:
+  quick-create settings are NOT a stable field set (`reversal_round` absent on
+  one capture, explicit 0 on another; `slots_bn` absent entirely — bench is
+  implied by rounds − starters). Nullable `Integer` for the absent/zero/nonzero
+  trichotomy was necessary, not defensive.
+- **Fixtures are the pinned wire contract:** an executor-reconstructed fixture
+  encoded five wrong "facts" about Sleeper's payload. Reconstructions encode
+  assumptions as evidence. Probe captures get committed AT CAPTURE TIME.
+- **Derive, don't duplicate (test edition):** a fixture's internal id and a
+  test constant naming it are the same fact stored twice; Mockito stubs are
+  exact-match joins, so the disagreement surfaces as a stub-miss three frames
+  from the cause. Key stubs from the loaded fixture.
+- **The gate catches the reviewer — four times this phase:** my N2 field diff
+  was incomplete (3 of 5), my breaking-test prediction was wrong both
+  directions, my Finding A wrongly accused the executor (the invocation prompt
+  I never saw had granted the latitude), and my Run B expected number (180) was
+  wrong (the real shape was 12×14=168 — and the system's own disclosure line
+  logged the correction in real time). Investigation-first specs and
+  expected-number runbooks exist to catch the spec author too.
+- **The invocation prompt is part of the contract** — and it outranks the spec
+  file in practice. One casual "change anything you like" sentence dissolved
+  the stop-and-flag protocol; the executor behaved better than instructed,
+  which cannot be banked on. Standing invocation text adopted (below).
+- **Redundant criteria are not free:** I wrote a `picked_at IS NULL` criterion
+  the schema already guarantees. Vacuous criteria train the owner to skip
+  criteria. Derivable facts close by derivation, with the derivation recorded.
+- **Comparisons must normalize what the toolchain owns:** PowerShell jq emits
+  CRLF; psql emits LF; a byte-diff criterion between them is unsatisfiable even
+  for identical content. Raw bytes for CAPTURE, normalization for COMPARISON.
+- **Artifact provenance is per-run:** two runs sharing one filename namespace
+  produced a cross-draft A7 comparison that looked like a 40-line discrepancy.
+  Per-run subdirs + one-line MANIFEST (draft_id, session_id, config, date).
+- **Clean tree before delegating:** the executor found 19 staged owner renames
+  and a secret-bearing worktree edit at commit time and had to do careful
+  surgery (blank/commit-only/restore) to avoid sweeping them. Outcome correct,
+  fully disclosed — but the hazard was the dirty tree at invocation.
+
+## Interview-ready talking points
+
+- "I integrated a live draft feed as a poll-and-diff pipeline: Sleeper has no
+  webhooks, so I fetch the picks array, set-difference against persisted state
+  on the natural sequence key, and insert idempotently — the composite PK is
+  the concurrency backstop. Classic CDC over REST; restart recovery falls out
+  of the same anti-join for free."
+- "The external feed owns the sequence, so my server verifies instead of
+  assigns: every ingested pick is cross-checked against snake arithmetic the
+  engine derives independently, and a mismatch halts the sync loudly with a
+  self-diagnosing message. The grounding discipline applied to a data pipeline."
+- "Acceptance caught a real race: the provider flips the draft to complete
+  before its picks array settles, and my sync stopped green two picks short.
+  The runbook carried the expected count, which is the only reason anyone
+  noticed. The fix makes terminal decisions demand agreement between the
+  status flag and the record count — status flags lie, counts don't."
+- "I resolved a concurrent-writer TODO by prevention rather than retry: linked
+  sessions reject manual writes with a 409, so the race is impossible instead
+  of handled."
+- "Session creation is deferred until every snapshot fact exists — the draft
+  order literally doesn't exist until the draft starts — so the
+  frozen-at-creation invariant holds for both manual and synced sessions
+  without nullable columns or placeholder lies."
+
+## Mistakes and lessons
+
+- Reviewer errors, on the record: incomplete field diff, wrong breaking-test
+  list, a false accusation resolved by evidence I hadn't seen (verify the
+  channel before grading claims about it), and a wrong expected number
+  corrected by the system's own disclosure line.
+- The kill-restart drill failed on CAPTURE, not mechanism: the relink POST
+  fired before the app was up, the empty curl file was the tell, and the 404's
+  registry semantics discriminated the mechanism. Amendment: confirm the app
+  answers before re-POSTing; capture side-effectful curls with `-si`.
+- Two runs' artifacts in one namespace nearly graded a healthy pipeline as
+  broken (the cross-draft diff). Provenance discipline is not optional for
+  acceptance artifacts.
+- The A5 staleness observation: a grounded answer delivered against state the
+  draft room had already raced past, with no "as of the last poll" disclosure.
+  First live specimen; watch item, not yet a prompt change.
+
+## Standing policies adopted this phase
+
+- **Invocation prompt (verbatim, reusable):** "Implement docs/specs/<spec>.md
+  exactly. Follow its Deviation Protocol: any file or change beyond the spec's
+  list — stop and flag with reasoning before writing. One-line commits per the
+  spec's commit plan. End with a senior-developer review of your own diff."
+- **Spec files may ride their implementation commit** (waived identically three
+  times → now the rule).
+- **Clean/stash owner state before delegating a commit.**
+- **Acceptance artifacts: per-run subdirs + MANIFEST; normalize line endings in
+  cross-toolchain comparisons.**
+
+## Things to revisit later
+
+- **K/DEF profile zeros — OPEN, unresolved this phase:** `getPlayerProfile` on
+  a K/DEF id "returns stats (0)" without failing. The shape question (honest
+  absence vs literal fabricated 0.0 valuations) was never answered with the
+  actual JSON. If literal zeros: mart-miss must degrade to loud strings
+  (NewsVocabulary style) — a fabricated zero would launder through the
+  grounding invariant as a tool-traceable falsehood. Small 5.0-c candidate.
+- **Token baseline:** re-based at 2564 on the rookie instrument question (the
+  2430 lineage ended; 4.4.2 prompt-delta attribution forfeited, documented).
+  The verbatim instrument text MUST be recorded next to 2564 in the acceptance
+  dir if not already.
+- **Settle-window tuning:** completion-grace-polls=20 is a guess until a WARN
+  fires with timestamps. Record the measurement when it happens.
+- **Overcount quarantine** (`> expected` persists rows then halts every relink;
+  fine single-user, quarantine if multi-user ever).
+- **Shortfall surfaced in the status Report** (operator currently sees plain
+  SYNCING during grace) — 5.1 candidate.
+- **Staleness disclosure** ("as of the last poll" in agent answers during live
+  drafts) — one specimen; graduate on evidence.
+- **Ungrounded-claim family: still 2 specimens** (Run A/B answers were
+  grounded). Third graduates the roster/breadth grounding line.
+- **5.1 importer inputs banked:** offensive-key whitelist vs the wide Sleeper
+  scoring vocabulary; `pass_int=-1` as the importer test case (engine
+  convention is −2 — the Mahomes anchor will catch a disrespectful importer);
+  K/DEF slots in LeagueConfig; mock drafts' preset-tag tier
+  (`metadata.scoring_type`); `slots_bn` absent on quick-create → bench derived
+  as rounds − starters; league object vs draft object truth-source split.
+- **Traded picks:** cross-check halt message carries the "traded pick?" hint;
+  real support = persist draft_slot as observed fact (V12 comment's
+  anticipated design). Pre-draft-night insurance probe: curl the league's
+  draft object and eyeball slot state before the real draft.
+- Deferred unchanged: SleeperClient RestClient standardization,
+  reconciliation/news-sync concurrency (virtual threads pass), Micrometer
+  uri-tag fix, near-duplicate news retrieval, FantasyPros key, frontend.
