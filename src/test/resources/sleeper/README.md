@@ -1,7 +1,7 @@
 # Sleeper wire fixtures (Phase 5.0 / 5.0-a)
 
 Every fixture is a copy of a captured probe payload in
-`docs/specs/phase-5.0-probes/` — nothing here is reconstructed from memory.
+`../../../../docs/specs/phase-5-0-probes/` — nothing here is reconstructed from memory.
 
 Verbatim probe copies (real Sleeper responses, captured 2026-07-14/15):
 

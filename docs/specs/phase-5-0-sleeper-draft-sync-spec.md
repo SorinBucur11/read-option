@@ -1,7 +1,7 @@
 # Phase 5.0 — Sleeper Live Draft Sync (spec)
 
 **Owner:** Sorin. **Executor:** Claude Code. **Chat design session:** 2026-07-14/15.
-**Probe evidence:** `docs/specs/phase-5.0-probes/` (p1–p6a + the pre_draft/drafting
+**Probe evidence:** `phase-5-0-probes/` (p1–p6a + the pre_draft/drafting
 draft-object pair). Design decisions D1–D7 resolved in chat; this spec is their
 executable form.
 

@@ -14,7 +14,7 @@ The grounding invariant extends into the time dimension (audit finding A-4): **e
 
 **Calendar constraint:** training camp opens late July 2026. Per audit finding A-5, high-coverage players retain as few as 4–5 blurbs in the source feed; camp-season blurb volume can cycle that buffer within a week, and rolled-off items are unrecoverable (A-3). **Commit B (ingestion) ships before Commits C/D are polished.** Every camp week without a running sync is star-player news permanently lost.
 
-## 2. Ratified decisions (evidence in `docs/specs/phase-4.4-source-audit/`)
+## 2. Ratified decisions (evidence in `phase-4-4-source-audit/`)
 
 | # | Decision | Basis |
 |---|----------|-------|

@@ -1,0 +1,1 @@
+{"detail":"a sync is already running for draft 1385725314738429952","instance":"/api/sleeper/sync","status":409,"title":"Draft Sync Conflict","type":"https://readoption.app/problems/draft-sync-conflict"}

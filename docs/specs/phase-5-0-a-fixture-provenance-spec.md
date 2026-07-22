@@ -34,13 +34,13 @@ reconstructed. Say exactly this in the README.
 
 ### New files (probe record)
 
-`docs/specs/phase-5.0-probes/p7-draft-pre_draft.json` — exactly:
+`phase-5-0-probes/p7-draft-pre_draft.json` — exactly:
 
 ```json
 {"created":1783956532382,"creators":["87732859926102016"],"draft_id":"1382417529397342208","draft_order":null,"last_message_id":"1382417529397342208","last_message_time":1783956532382,"last_picked":null,"league_id":null,"metadata":{"description":"","name":"","scoring_type":"std"},"season":"2026","season_type":"regular","settings":{"autostart":0,"cpu_autopick":1,"pick_timer":120,"rounds":15,"slots_def":1,"slots_flex":2,"slots_k":1,"slots_qb":1,"slots_rb":2,"slots_te":1,"slots_wr":2,"teams":10},"slot_to_roster_id":{"1":1,"10":10,"2":2,"3":3,"4":4,"5":5,"6":6,"7":7,"8":8,"9":9},"sport":"nfl","start_time":null,"status":"pre_draft","type":"snake"}
 ```
 
-`docs/specs/phase-5.0-probes/p8-draft-drafting.json` — exactly:
+`phase-5-0-probes/p8-draft-drafting.json` — exactly:
 
 ```json
 {"created":1783956532382,"creators":["87732859926102016"],"draft_id":"1382417529397342208","draft_order":{"87732859926102016":7},"last_message_id":"1382417640307306496","last_message_time":1783956558829,"last_picked":1783956610346,"league_id":null,"metadata":{"description":"","name":"","scoring_type":"std"},"season":"2026","season_type":"regular","settings":{"autostart":0,"cpu_autopick":1,"pick_timer":120,"rounds":15,"slots_def":1,"slots_flex":2,"slots_k":1,"slots_qb":1,"slots_rb":2,"slots_te":1,"slots_wr":2,"teams":10},"slot_to_roster_id":{"1":1,"10":10,"2":2,"3":3,"4":4,"5":5,"6":6,"7":7,"8":8,"9":9},"sport":"nfl","start_time":1783956558819,"status":"drafting","type":"snake"}

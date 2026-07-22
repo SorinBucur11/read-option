@@ -1,0 +1,6 @@
+HTTP/1.1 202 
+Content-Type: application/json
+Content-Length: 116
+Date: Wed, 22 Jul 2026 19:27:50 GMT
+
+{"draftId":"1385734536872075264","state":"WATCHING","sessionId":null,"picksSynced":0,"lastPollAt":null,"error":null}

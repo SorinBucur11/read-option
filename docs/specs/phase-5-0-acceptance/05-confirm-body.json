@@ -1,0 +1,34 @@
+{
+  "current": {
+    "rules": {
+      "scoring": {
+        "basePreset": "PPR",
+        "passingTdPoints": 4,
+        "interceptionPoints": -1,
+        "tePremium": false
+      },
+      "roster": {
+        "teamCount": 10,
+        "qbSlots": 1,
+        "rbSlots": 2,
+        "wrSlots": 2,
+        "teSlots": 1,
+        "flexSlots": 2,
+        "flexEligible": [
+          "RB",
+          "WR",
+          "TE"
+        ],
+        "superflexSlots": 0,
+        "benchSlots": 5
+      },
+      "playoff": null
+    },
+    "tactics": {
+      "positionalStrategy": null,
+      "riskPosture": null,
+      "earliestRoundByPosition": {},
+      "freeformNotes": []
+    }
+  }
+}
